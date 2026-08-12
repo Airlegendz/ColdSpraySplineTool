@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+sweep_output/
+regression_straight_cone.png

@@ -1,0 +1,32 @@
+# Example parameter bounds for a Latin hypercube sweep.
+# All lengths/radii in meters. Each parameter is [low, high]; the sampler
+# draws uniformly within these bounds via a Latin hypercube design.
+#
+# barrel_count and barrel_positions are NOT sampled continuously here --
+# barrel_count is fixed per sweep (set it and re-run for a different count),
+# and barrel_positions are sampled as `barrel_count` independent bounds
+# entries below (only the first `barrel_count` are used).
+
+fixed:
+  inlet_radius: 0.010
+  convergent_length: 0.030
+  barrel_count: 1
+  barrel_length: 0.005
+
+  # Constraint thresholds -- UNCONFIRMED defaults, see README.md.
+  max_fillet_fraction: 0.6
+  max_curvature: 800.0
+
+bounds:
+  throat_radius: [0.003, 0.005]
+  throat_fillet_radius: [0.0015, 0.0025]
+  control_point_1_position: [0.004, 0.010]
+  control_point_1_radius: [0.0055, 0.006]
+  control_point_2_position: [0.012, 0.020]
+  control_point_2_radius: [0.006, 0.009]
+  exit_radius: [0.009, 0.012]
+  # One entry per barrel section (length must equal fixed.barrel_count).
+  barrel_position_0: [0.0, 0.002]
+
+sampling:
+  method: latin_hypercube
