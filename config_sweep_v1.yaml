@@ -1,0 +1,43 @@
+# First production sweep for the cold spray nozzle spline generator.
+# Bounds are derived from Badali et al. (2025) and Gutierrez de Frutos et al.
+# (2025) as a sane starting envelope, tightened specifically to avoid the
+# fillet_bound rejection cluster seen in earlier testing.
+#
+# NOTE: this file was adapted from a draft written against a min/max-dict +
+# categorical-values schema that sweep.py doesn't parse. sweep.py currently
+# only understands [low, high] list bounds and scalar `fixed` values, so:
+#   - barrel_count (originally categorical [0, 1]) is fixed at 1 here.
+#   - barrel_positions: [0.0] (a fixed list) is expressed as the degenerate
+#     bound barrel_position_0: [0.0, 0.0], which always samples to 0.0.
+# If barrel_count needs to actually vary 0/1 across the sweep, that needs a
+# small sweep.py extension (categorical sampling) -- flag if you want that
+# before the full run.
+
+fixed:
+  inlet_radius: 0.0085          # m — matches Badali et al.'s 17mm inlet diameter
+  convergent_length: 0.040      # m — matches Badali et al.'s fixed 40mm convergent section
+  max_fillet_fraction: 0.6      # UNCONFIRMED default, kept as-is
+  max_curvature: 800.0          # UNCONFIRMED default, kept as-is
+  barrel_count: 1               # single barrel immediately trailing the exit (see note above)
+
+bounds:
+  throat_radius: [0.0011, 0.0020]              # ~2.2-4mm throat diameter (Badali et al.)
+  throat_fillet_radius: [0.0001, 0.0006]        # capped well under 0.6 * min(throat_radius)=0.00066m
+                                                 # to avoid spurious fillet_bound rejections at the
+                                                 # low end of throat_radius
+  control_point_1_position: [0.020, 0.060]
+  control_point_1_radius: [0.0015, 0.0028]
+  control_point_2_position: [0.070, 0.180]      # >= cp1_position max + 1cm gap
+  control_point_2_radius: [0.0025, 0.0060]
+  exit_position: [0.22, 0.30]                   # >= cp2_position max (0.180) + 4cm gap; covers
+                                                 # Badali et al.'s tested 120-360mm divergent lengths
+                                                 # and Gutierrez de Frutos et al.'s optimum (~200mm)
+                                                 # at the lower end, with room beyond both
+  exit_radius: [0.0025, 0.0070]                 # expansion ratio ~4-16 at min throat_radius,
+                                                 # bracketing both tested values (8, 12)
+  barrel_length: [0.0, 0.150]                   # 0 effectively disables the barrel; matches
+                                                 # Badali et al.'s max tested (150mm)
+  barrel_position_0: [0.0, 0.0]                 # fixed at exit (see note above)
+
+sampling:
+  method: latin_hypercube

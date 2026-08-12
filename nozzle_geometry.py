@@ -401,7 +401,24 @@ def _check_barrel_overlap(cfg: GeometryConfig, exit_x: float) -> Optional[str]:
     return None
 
 
-def _check_monotonic_and_curvature(points: List[Point], throat_x: float, cfg: GeometryConfig) -> Optional[str]:
+def _check_monotonic_and_curvature(
+    points: List[Point], throat_x: float, curvature_start_x: float, cfg: GeometryConfig
+) -> Optional[str]:
+    """
+    Monotonicity is checked across the whole profile from the throat onward
+    (fillet + divergent spline + barrel) -- that constraint is fine as-is.
+
+    Curvature (max_curvature) is checked only from curvature_start_x onward,
+    i.e. from the *end* of the throat fillet arc through the divergent
+    spline and barrel. The fillet has its own dedicated tightness constraint
+    (fillet_bound / max_fillet_fraction, see _check_fillet_bound) -- a
+    circular arc's curvature is exactly 1/throat_fillet_radius everywhere
+    along it, so checking the fillet against max_curvature (a threshold
+    sized for the divergent spline's smoothness) as well double-constrains
+    the same feature with two thresholds that can be mathematically
+    incompatible (e.g. a fillet radius satisfying max_fillet_fraction can
+    still be far tighter than 1/max_curvature demands).
+    """
     # Only check from the throat onward (radius may legitimately decrease
     # through the convergent section before the throat).
     seg = [(x, r) for x, r in points if x >= throat_x - 1e-9]
@@ -415,9 +432,11 @@ def _check_monotonic_and_curvature(points: List[Point], throat_x: float, cfg: Ge
 
     # Second-derivative curvature proxy via finite differences on non-uniform
     # samples (the divergent spline sampling is not perfectly even in x).
-    xs = [p[0] for p in seg]
-    rs = [p[1] for p in seg]
-    for i in range(1, len(seg) - 1):
+    # Restricted to curvature_start_x onward -- see docstring above.
+    curve_seg = [(x, r) for x, r in seg if x >= curvature_start_x - 1e-9]
+    xs = [p[0] for p in curve_seg]
+    rs = [p[1] for p in curve_seg]
+    for i in range(1, len(curve_seg) - 1):
         h1 = xs[i] - xs[i - 1]
         h2 = xs[i + 1] - xs[i]
         if h1 <= 0 or h2 <= 0:
@@ -475,7 +494,7 @@ def generate_geometry(cfg: GeometryConfig) -> GeometryResult:
 
     all_pts = convergent_pts + fillet_pts + divergent_pts + barrel_pts
 
-    reason = _check_monotonic_and_curvature(all_pts, throat_x, cfg)
+    reason = _check_monotonic_and_curvature(all_pts, throat_x, throat_end_point[0], cfg)
     if reason:
         logger.warning("Rejected geometry: %s", reason)
         return GeometryResult(points=all_pts, valid=False, rejection_reason=reason, config=cfg)
@@ -622,6 +641,70 @@ def _regression_test_fillet_extent_rejection() -> bool:
     return passed
 
 
+# ----------------------------------------------------------------------------
+# Regression tests: curvature check is scoped to the divergent spline (and
+# barrel), not the throat fillet -- see _check_monotonic_and_curvature.
+# ----------------------------------------------------------------------------
+def _regression_test_tight_fillet_passes_curvature() -> bool:
+    """
+    A fillet radius small enough that its own curvature (1/rf) exceeds
+    max_curvature -- which would have failed the old, fillet-inclusive
+    curvature check -- must now PASS as long as the divergent spline itself
+    stays smooth. Confirms the curvature check no longer double-constrains
+    the fillet (fillet tightness is fillet_bound's job).
+    """
+    cfg = GeometryConfig(
+        throat_radius=0.003,
+        throat_fillet_radius=0.0005,  # 1/rf = 2000 > max_curvature=800: would have failed before
+        control_point_1_radius=0.0035,
+        control_point_1_position=0.020,
+        control_point_2_radius=0.006,
+        control_point_2_position=0.050,
+        exit_radius=0.009,
+        exit_position=0.090,
+        barrel_length=0.0,
+        barrel_count=0,
+        barrel_positions=[],
+    )
+    result = generate_geometry(cfg)
+    passed = result.valid
+    logger.info(
+        "Regression test (tight fillet passes curvature): valid=%s reason=%s -> %s",
+        result.valid, result.rejection_reason, "PASS" if passed else "FAIL",
+    )
+    return passed
+
+
+def _regression_test_rough_spline_still_fails_curvature() -> bool:
+    """
+    A genuinely sharp bend in the *divergent spline* itself (not the
+    fillet) -- a large radius jump over a very short control_point_1
+    distance -- must still be rejected with [curvature]. Confirms the
+    fillet-scoping fix narrows the check rather than disabling it.
+    """
+    cfg = GeometryConfig(
+        throat_radius=0.003,
+        throat_fillet_radius=0.0005,
+        control_point_1_radius=0.006,
+        control_point_1_position=0.005,  # sharp radius jump over a short distance
+        control_point_2_radius=0.007,
+        control_point_2_position=0.030,
+        exit_radius=0.009,
+        exit_position=0.060,
+        barrel_length=0.0,
+        barrel_count=0,
+        barrel_positions=[],
+    )
+    result = generate_geometry(cfg)
+    passed = (not result.valid) and result.rejection_reason is not None \
+        and result.rejection_reason.startswith(f"[{REASON_CURVATURE}]")
+    logger.info(
+        "Regression test (rough spline still fails curvature): valid=%s reason=%s -> %s",
+        result.valid, result.rejection_reason, "PASS" if passed else "FAIL",
+    )
+    return passed
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -634,6 +717,8 @@ if __name__ == "__main__":
         "straight_cone": _regression_test_straight_cone(plot=args.plot),
         "dedup_float_tolerance": _regression_test_dedup_float_tolerance(),
         "fillet_extent_rejection": _regression_test_fillet_extent_rejection(),
+        "tight_fillet_passes_curvature": _regression_test_tight_fillet_passes_curvature(),
+        "rough_spline_still_fails_curvature": _regression_test_rough_spline_still_fails_curvature(),
     }
     for name, ok in results.items():
         print(f"Regression test [{name}]:", "PASS" if ok else "FAIL")
