@@ -37,17 +37,23 @@ any other CFD preprocessor) via a Latin hypercube sweep.
 2. **Throat fillet**: a circular arc of radius `throat_fillet_radius`,
    tangent to the flat convergent wall and blending into the divergent
    section's initial slope.
-3. **Divergent**: a piecewise-cubic (Catmull-Rom-derived Bezier) spline,
-   C1-continuous, passing exactly through the throat point, control point 1,
-   control point 2, and the exit point, in that order. **Design choice**: a
-   true single cubic Bezier (4 control points) does not generally pass
-   through its two interior control points — only through its endpoints —
-   so a clamped Catmull-Rom-to-Bezier spline was used instead to satisfy the
-   requirement that the curve pass through `control_point_1` and
-   `control_point_2` exactly. See the module docstring in
-   `nozzle_geometry.py` for the full rationale. The exit axial position is
-   derived as `control_point_2_position + 1.5 * (control_point_2_position -
-   control_point_1_position)` — also a documented default, not a swept
+3. **Divergent**: a piecewise-cubic Hermite spline (evaluated via its Bezier
+   form), C1-continuous, passing exactly through the throat point, control
+   point 1, control point 2, and the exit point, in that order. **Design
+   choice**: a true single cubic Bezier (4 control points) does not
+   generally pass through its two interior control points — only through
+   its endpoints — so a piecewise Hermite/Bezier spline was used instead to
+   satisfy the requirement that the curve pass through `control_point_1`
+   and `control_point_2` exactly. Tangents are *clamped* at both ends
+   rather than extrapolated from a phantom point: the start tangent matches
+   the throat fillet's actual exit slope (fillet → spline is C1), and the
+   end tangent is forced horizontal when a barrel follows (spline → barrel
+   is C1) or left as the natural last-chord slope when there is no barrel
+   (so the spline degenerates exactly to a straight line when all four
+   knots are colinear — see the regression test). See the module docstring
+   in `nozzle_geometry.py` for the full rationale. The exit axial position
+   is derived as `control_point_2_position + 1.5 * (control_point_2_position
+   - control_point_1_position)` — also a documented default, not a swept
    parameter.
 4. **Barrel(s)**: `barrel_count` straight, constant-radius sections at the
    given `barrel_positions` (axial offsets from the divergent section's

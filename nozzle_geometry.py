@@ -184,14 +184,26 @@ def _fillet_arc(cfg: GeometryConfig, throat_x: float) -> Tuple[List[Point], Poin
 
 
 # ----------------------------------------------------------------------------
-# Divergent section: piecewise-cubic (Catmull-Rom-derived Bezier) spline
-# through throat_end -> cp1 -> cp2 -> exit, C1-continuous.
+# Divergent section: piecewise-cubic Hermite spline (converted to Bezier for
+# evaluation) through throat_end -> cp1 -> cp2 -> exit, C1-continuous.
+#
+# Tangents at the two interior knots (cp1, cp2) are estimated Catmull-Rom
+# style from their actual neighboring knots. The two end tangents are
+# *clamped* rather than extrapolated from a phantom point, so the curve
+# is smoothly tangent to its neighbors on both sides:
+#   - at the throat, the tangent equals the fillet arc's actual exit slope
+#     (so throat fillet -> divergent spline is C1-continuous)
+#   - at the exit, the tangent is forced horizontal (slope 0), matching the
+#     constant-radius barrel section (or a free jet exit) that follows, so
+#     divergent spline -> barrel is C1-continuous instead of kinking.
 # ----------------------------------------------------------------------------
-def _catmull_rom_to_bezier(p0, p1, p2, p3):
-    """Convert one Catmull-Rom segment (p1->p2) to cubic Bezier control points."""
-    c1 = (p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0)
-    c2 = (p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0)
-    return p1, c1, c2, p2
+def _hermite_to_bezier(p0, p1, m0, m1):
+    """Convert one Hermite segment (p0->p1, tangent vectors m0/m1) to a cubic Bezier."""
+    b0 = p0
+    b1 = (p0[0] + m0[0] / 3.0, p0[1] + m0[1] / 3.0)
+    b2 = (p1[0] - m1[0] / 3.0, p1[1] - m1[1] / 3.0)
+    b3 = p1
+    return b0, b1, b2, b3
 
 
 def _bezier_point(b0, b1, b2, b3, t):
@@ -201,7 +213,7 @@ def _bezier_point(b0, b1, b2, b3, t):
     return x, r
 
 
-def _divergent_spline(cfg: GeometryConfig, throat_point: Point) -> Tuple[List[Point], Point]:
+def _divergent_spline(cfg: GeometryConfig, throat_point: Point, throat_slope: float) -> Tuple[List[Point], Point]:
     tx, tr = throat_point
     cp1 = (tx + cfg.control_point_1_position, cfg.control_point_1_radius)
     cp2 = (tx + cfg.control_point_2_position, cfg.control_point_2_radius)
@@ -213,21 +225,46 @@ def _divergent_spline(cfg: GeometryConfig, throat_point: Point) -> Tuple[List[Po
     exit_point = (cp2[0] + max(exit_dx, 1e-6), cfg.exit_radius)
 
     knots = [throat_point, cp1, cp2, exit_point]
-    # Phantom endpoints for Catmull-Rom tangent estimation at the boundaries.
-    phantom_start = (2 * knots[0][0] - knots[1][0], 2 * knots[0][1] - knots[1][1])
-    phantom_end = (2 * knots[-1][0] - knots[-2][0], 2 * knots[-1][1] - knots[-2][1])
-    ext = [phantom_start] + knots + [phantom_end]
+
+    # Tangent vectors at each knot, scaled to the local chord length so
+    # segment-to-segment speed stays reasonable (standard Catmull-Rom scaling).
+    m_throat = (1.0, throat_slope)
+    chord0 = knots[1][0] - knots[0][0]
+    m_throat = (chord0, throat_slope * chord0)
+
+    m_cp1 = (knots[2][0] - knots[0][0], knots[2][1] - knots[0][1])
+    m_cp1 = tuple(c / 2.0 for c in m_cp1)
+
+    m_cp2 = (knots[3][0] - knots[1][0], knots[3][1] - knots[1][1])
+    m_cp2 = tuple(c / 2.0 for c in m_cp2)
+
+    chord_last = knots[3][0] - knots[2][0]
+    if cfg.barrel_count > 0:
+        # Clamp the exit tangent horizontal so the spline blends smoothly
+        # (C1) into the constant-radius barrel that follows.
+        m_exit = (chord_last, 0.0)
+    else:
+        # No barrel: use the last chord's own slope as the end tangent (a
+        # "cardinal spline" boundary condition). This lets the curve open
+        # freely at the exit and, notably, makes the spline degenerate
+        # exactly to a straight line when all four knots are colinear.
+        m_exit = (chord_last, knots[3][1] - knots[2][1])
+
+    tangents = [m_throat, m_cp1, m_cp2, m_exit]
 
     n_segments = len(knots) - 1
     samples_per_segment = max(cfg.divergent_samples // n_segments, 12)
 
     pts: List[Point] = []
     for seg in range(n_segments):
-        p0, p1, p2, p3 = ext[seg], ext[seg + 1], ext[seg + 2], ext[seg + 3]
-        b0, b1, b2, b3 = _catmull_rom_to_bezier(p0, p1, p2, p3)
-        last = samples_per_segment if seg == n_segments - 1 else samples_per_segment
+        p0, p1 = knots[seg], knots[seg + 1]
+        m0, m1 = tangents[seg], tangents[seg + 1]
+        b0, b1, b2, b3 = _hermite_to_bezier(p0, p1, m0, m1)
+        last = samples_per_segment
         for i in range(last):
-            t = i / (last - 1) if seg == n_segments - 1 else i / last
+            t = i / (last - 1) if last > 1 else 0.0
+            if seg > 0 and i == 0:
+                continue  # avoid duplicating the shared knot between segments
             pts.append(_bezier_point(b0, b1, b2, b3, t))
     return pts, exit_point
 
@@ -348,8 +385,12 @@ def generate_geometry(cfg: GeometryConfig) -> GeometryResult:
     throat_x = cfg.convergent_length  # inlet at x=0
 
     convergent_pts = _convergent_profile(cfg, throat_x)
-    fillet_pts, throat_end_point, _ = _fillet_arc(cfg, throat_x)
-    divergent_pts, exit_point = _divergent_spline(cfg, throat_end_point)
+    fillet_pts, throat_end_point, fillet_end_slope = _fillet_arc(cfg, throat_x)
+    # Drop the duplicate junction point (convergent's last sample coincides
+    # with the fillet's first sample) to avoid a zero-length segment.
+    if convergent_pts and fillet_pts and convergent_pts[-1] == fillet_pts[0]:
+        convergent_pts = convergent_pts[:-1]
+    divergent_pts, exit_point = _divergent_spline(cfg, throat_end_point, fillet_end_slope)
     barrel_pts = _barrel_sections(cfg, exit_point)
 
     reason = _check_barrel_overlap(cfg, exit_point[0])
