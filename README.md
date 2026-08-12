@@ -107,6 +107,13 @@ type rather than by raw, value-specific message text.
   positive `barrel_length` when `barrel_count > 0`.
 - **`[fillet_bound]`**: `throat_fillet_radius <= max_fillet_fraction *
   throat_radius`.
+- **`[fillet_extent]`**: the fillet arc's axial (x) extent must stay
+  strictly less than `control_point_1_position` — otherwise the fillet
+  geometrically overruns control point 1. This can happen for a steep
+  target slope (`(control_point_1_radius - throat_radius) /
+  control_point_1_position`, see the fillet-target-slope note below)
+  combined with a small `control_point_1_position`, and was previously
+  unconstrained.
 - **`[barrel_overlap]`**: when `barrel_count > 1`, barrel intervals
   `[position, position + barrel_length]` must not overlap each other.
 
@@ -136,7 +143,12 @@ default. The code-level default only applies if you construct
 the field.
 
 Also unconfirmed: `inlet_radius`, `convergent_length` (fixed
-convergent-section shape).
+convergent-section shape), and the **fillet target-slope heuristic** in
+`_fillet_arc`/`_fillet_target_slope` — the fillet's sweep angle is set from
+the straight-chord slope `(control_point_1_radius - throat_radius) /
+control_point_1_position`, a real modeling decision (a different heuristic,
+e.g. matching the divergent spline's actual solved tangent, would produce a
+different fillet shape), not a validated one.
 
 Confirm these against the actual CFD/experimental setup before committing
 to a full production sweep. With the current `config_example.yaml` bounds
@@ -148,17 +160,27 @@ rejection rate** (123/200 valid), broken down as:
 | `fillet_bound` | 38 |
 | `monotonicity` | 26 |
 | `curvature` | 13 |
+| `fillet_extent` | 0 |
 
-This was re-measured *after* making `exit_position` an independent
-parameter (see above) — the earlier ~50% figure included artifacts from
-the old derived exit-position formula compressing the divergent spline
-into a tighter-than-intended span, which spuriously tripped the curvature
-cap. `fillet_bound` is now the largest bucket: `throat_fillet_radius`
-bounds `[0.0015, 0.0025]` and `throat_radius` bounds `[0.003, 0.005]`
-combined with `max_fillet_fraction = 0.6` reject any sample where
-`throat_fillet_radius > 0.6 * throat_radius` — this is a genuine bounds/
-threshold interaction, not an artifact, and is the next thing to tighten
-once real fillet-fraction guidance is available.
+`fillet_extent` (the fillet-overrunning-control_point_1 check) catches
+**zero** rejections at the current bounds — `throat_fillet_radius` ∈
+`[0.0015, 0.0025]` and `control_point_1_position` ∈ `[0.004, 0.010]` keep
+the fillet's x-extent well under `control_point_1_position` in practice, so
+this is currently a theoretical edge case rather than a live problem. It's
+still enforced because a future bounds change (smaller
+`control_point_1_position` or larger fillet radii) could trigger it
+silently otherwise.
+
+This breakdown was re-measured *after* making `exit_position` an
+independent parameter (see above) — the earlier ~50% figure included
+artifacts from the old derived exit-position formula compressing the
+divergent spline into a tighter-than-intended span, which spuriously
+tripped the curvature cap. `fillet_bound` is now the largest bucket:
+`throat_fillet_radius` bounds `[0.0015, 0.0025]` and `throat_radius` bounds
+`[0.003, 0.005]` combined with `max_fillet_fraction = 0.6` reject any
+sample where `throat_fillet_radius > 0.6 * throat_radius` — this is a
+genuine bounds/threshold interaction, not an artifact, and is the next
+thing to tighten once real fillet-fraction guidance is available.
 
 ## Usage
 

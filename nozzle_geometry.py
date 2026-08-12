@@ -42,6 +42,14 @@ logger = logging.getLogger("nozzle_geometry")
 
 Point = Tuple[float, float]
 
+# Tolerance used throughout for float comparisons (monotonicity check,
+# positive-lengths check, and junction-point dedup below).
+FLOAT_TOL = 1e-9
+
+
+def _points_close(p1: Point, p2: Point, tol: float = FLOAT_TOL) -> bool:
+    return abs(p1[0] - p2[0]) < tol and abs(p1[1] - p2[1]) < tol
+
 
 # ----------------------------------------------------------------------------
 # Defaults that are NOT established by the task and MUST be confirmed before
@@ -145,6 +153,40 @@ def _convergent_slope_at_throat(cfg: GeometryConfig) -> float:
 # Throat fillet: circular arc tangent to the (flat, zero-slope) convergent
 # wall at the throat and tangent to the divergent curve's start.
 # ----------------------------------------------------------------------------
+def _fillet_target_slope(cfg: GeometryConfig) -> float:
+    """
+    Target slope the fillet arc sweeps up to, shared by _fillet_arc (to build
+    the arc) and _check_fillet_extent (to bound its x-extent) so the two
+    stay consistent.
+
+    UNCONFIRMED DESIGN CHOICE: this straight-chord-to-cp1 heuristic is a
+    real modeling decision, not a validated engineering choice -- a
+    different heuristic (e.g. matching the divergent spline's actual
+    tangent at the throat once solved, or a fixed fraction of the total
+    expansion angle) would produce a different fillet shape. Flagged here
+    alongside max_curvature / max_fillet_fraction in README.md.
+    """
+    dx = cfg.control_point_1_position
+    dr = cfg.control_point_1_radius - cfg.throat_radius
+    target_slope = dr / dx if dx > 0 else 0.0
+    # Clamp to non-negative: the fillet blends from the flat (slope-0)
+    # convergent wall into the diverging wall, so it must not curve
+    # backward in x or r. A negative target here (control_point_1_radius
+    # < throat_radius) is a downstream parameterization error that the
+    # monotonicity check will flag on its own merits -- the fillet itself
+    # should never regress.
+    return max(target_slope, 0.0)
+
+
+def _fillet_x_extent(cfg: GeometryConfig) -> float:
+    """The fillet arc's axial extent (x distance from throat_x to its end sample)."""
+    rf = cfg.throat_fillet_radius
+    if rf <= 0:
+        return 0.0
+    theta_end = math.atan(_fillet_target_slope(cfg))
+    return rf * math.sin(theta_end)
+
+
 def _fillet_arc(cfg: GeometryConfig, throat_x: float) -> Tuple[List[Point], Point, float]:
     """
     Builds a circular arc of radius throat_fillet_radius that is tangent to
@@ -163,19 +205,7 @@ def _fillet_arc(cfg: GeometryConfig, throat_x: float) -> Tuple[List[Point], Poin
     if rf <= 0:
         return [(throat_x, rt)], (throat_x, rt), 0.0
 
-    # Estimate the target initial slope of the divergent section as the
-    # chord slope from throat to control_point_1 (a reasonable tangent
-    # target that keeps the fillet small and local to the throat).
-    dx = cfg.control_point_1_position
-    dr = cfg.control_point_1_radius - rt
-    target_slope = dr / dx if dx > 0 else 0.0
-    # Clamp to non-negative: the fillet blends from the flat (slope-0)
-    # convergent wall into the diverging wall, so it must not curve
-    # backward in x or r. A negative target here (control_point_1_radius
-    # < throat_radius) is a downstream parameterization error that the
-    # monotonicity check will flag on its own merits -- the fillet itself
-    # should never regress.
-    target_slope = max(target_slope, 0.0)
+    target_slope = _fillet_target_slope(cfg)
     theta_end = math.atan(target_slope)  # arc sweep angle from flat (0) to target_slope
 
     n = cfg.fillet_samples
@@ -238,7 +268,6 @@ def _divergent_spline(cfg: GeometryConfig, throat_point: Point, throat_slope: fl
 
     # Tangent vectors at each knot, scaled to the local chord length so
     # segment-to-segment speed stays reasonable (standard Catmull-Rom scaling).
-    m_throat = (1.0, throat_slope)
     chord0 = knots[1][0] - knots[0][0]
     m_throat = (chord0, throat_slope * chord0)
 
@@ -305,6 +334,7 @@ def _barrel_sections(cfg: GeometryConfig, exit_point: Point) -> List[Point]:
 # constraint type instead of by the full, value-specific message text.
 REASON_POSITIVE_LENGTHS = "positive_lengths"
 REASON_FILLET_BOUND = "fillet_bound"
+REASON_FILLET_EXTENT = "fillet_extent"
 REASON_BARREL_OVERLAP = "barrel_overlap"
 REASON_MONOTONICITY = "monotonicity"
 REASON_CURVATURE = "curvature"
@@ -333,6 +363,25 @@ def _check_fillet_bound(cfg: GeometryConfig) -> Optional[str]:
             f"[{REASON_FILLET_BOUND}] throat_fillet_radius={cfg.throat_fillet_radius} exceeds "
             f"max_fillet_fraction*throat_radius={limit} "
             f"(max_fillet_fraction={cfg.max_fillet_fraction}, UNCONFIRMED default)"
+        )
+    return None
+
+
+def _check_fillet_extent(cfg: GeometryConfig) -> Optional[str]:
+    """
+    The fillet arc's axial extent must stay strictly inside control_point_1's
+    position -- otherwise the fillet geometrically overruns control_point_1,
+    which for a steep target slope combined with a small
+    control_point_1_position is possible since the arc's x-extent is
+    currently unconstrained relative to it.
+    """
+    extent = _fillet_x_extent(cfg)
+    if extent >= cfg.control_point_1_position:
+        return (
+            f"[{REASON_FILLET_EXTENT}] fillet arc x-extent={extent:.6g} >= "
+            f"control_point_1_position={cfg.control_point_1_position:.6g} "
+            f"(throat_fillet_radius={cfg.throat_fillet_radius}, "
+            f"target_slope={_fillet_target_slope(cfg):.6g})"
         )
     return None
 
@@ -403,13 +452,18 @@ def generate_geometry(cfg: GeometryConfig) -> GeometryResult:
         logger.warning("Rejected geometry: %s", reason)
         return GeometryResult(points=[], valid=False, rejection_reason=reason, config=cfg)
 
+    reason = _check_fillet_extent(cfg)
+    if reason:
+        logger.warning("Rejected geometry: %s", reason)
+        return GeometryResult(points=[], valid=False, rejection_reason=reason, config=cfg)
+
     throat_x = cfg.convergent_length  # inlet at x=0
 
     convergent_pts = _convergent_profile(cfg, throat_x)
     fillet_pts, throat_end_point, fillet_end_slope = _fillet_arc(cfg, throat_x)
     # Drop the duplicate junction point (convergent's last sample coincides
     # with the fillet's first sample) to avoid a zero-length segment.
-    if convergent_pts and fillet_pts and convergent_pts[-1] == fillet_pts[0]:
+    if convergent_pts and fillet_pts and _points_close(convergent_pts[-1], fillet_pts[0]):
         convergent_pts = convergent_pts[:-1]
     divergent_pts, exit_point = _divergent_spline(cfg, throat_end_point, fillet_end_slope)
     barrel_pts = _barrel_sections(cfg, exit_point)
@@ -489,13 +543,99 @@ def _regression_test_straight_cone(plot: bool = False) -> bool:
     return passed
 
 
+# ----------------------------------------------------------------------------
+# Regression test: convergent/fillet junction dedup under realistic
+# floating-point discrepancy (not just bit-identical points).
+# ----------------------------------------------------------------------------
+def _regression_test_dedup_float_tolerance() -> bool:
+    """
+    convergent_pts[-1] and fillet_pts[0] are computed via different formulas
+    (cosine blend vs. sin/cos arc) and are not guaranteed to be bit-identical
+    even though they represent the same physical point. This test perturbs
+    the fillet's junction point by a tiny (sub-tolerance) epsilon -- as real
+    floating-point rounding would -- and confirms: (a) exact equality would
+    have failed to catch the duplicate (proving the old `==` check was
+    fragile), and (b) the tolerance-based _points_close still catches it.
+    """
+    cfg = GeometryConfig(
+        throat_radius=0.0045,
+        throat_fillet_radius=0.002,
+        control_point_1_radius=0.0055,
+        control_point_1_position=0.006,
+        control_point_2_radius=0.007,
+        control_point_2_position=0.015,
+        exit_radius=0.010,
+        exit_position=0.030,
+        barrel_length=0.005,
+        barrel_count=1,
+        barrel_positions=[0.001],
+    )
+    throat_x = cfg.convergent_length
+    convergent_pts = _convergent_profile(cfg, throat_x)
+    fillet_pts, _, _ = _fillet_arc(cfg, throat_x)
+
+    epsilon = 5e-10  # sub-tolerance (tol=1e-9), representative of fp rounding
+    perturbed_fillet_start = (fillet_pts[0][0] + epsilon, fillet_pts[0][1] - epsilon)
+
+    exact_match_would_catch_it = convergent_pts[-1] == perturbed_fillet_start
+    tolerance_catches_it = _points_close(convergent_pts[-1], perturbed_fillet_start)
+
+    passed = (not exact_match_would_catch_it) and tolerance_catches_it
+    logger.info(
+        "Regression test (dedup float tolerance): exact_match=%s tolerance_match=%s -> %s",
+        exact_match_would_catch_it, tolerance_catches_it, "PASS" if passed else "FAIL",
+    )
+    return passed
+
+
+# ----------------------------------------------------------------------------
+# Regression test: fillet arc overrunning control_point_1 is rejected.
+# ----------------------------------------------------------------------------
+def _regression_test_fillet_extent_rejection() -> bool:
+    """
+    A steep target slope (large control_point_1_radius jump over a tiny
+    control_point_1_position) combined with a fillet radius large enough to
+    sweep a meaningful arc should push the fillet's x-extent past
+    control_point_1_position, and generate_geometry must reject it with the
+    [fillet_extent] reason.
+    """
+    cfg = GeometryConfig(
+        throat_radius=0.003,
+        throat_fillet_radius=0.0017,   # within max_fillet_fraction*throat_radius (0.6*0.003=0.0018)
+        control_point_1_radius=0.006,  # steep jump...
+        control_point_1_position=0.0005,  # ...over a tiny axial distance
+        control_point_2_radius=0.008,
+        control_point_2_position=0.010,
+        exit_radius=0.010,
+        exit_position=0.020,
+        barrel_length=0.0,
+        barrel_count=0,
+        barrel_positions=[],
+    )
+    result = generate_geometry(cfg)
+    passed = (not result.valid) and result.rejection_reason is not None \
+        and result.rejection_reason.startswith(f"[{REASON_FILLET_EXTENT}]")
+    logger.info(
+        "Regression test (fillet extent rejection): valid=%s reason=%s -> %s",
+        result.valid, result.rejection_reason, "PASS" if passed else "FAIL",
+    )
+    return passed
+
+
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Nozzle geometry regression test.")
+    parser = argparse.ArgumentParser(description="Nozzle geometry regression tests.")
     parser.add_argument("--plot", action="store_true", help="Render the regression-test profile to a PNG.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
-    ok = _regression_test_straight_cone(plot=args.plot)
-    print("Regression test:", "PASS" if ok else "FAIL")
+    results = {
+        "straight_cone": _regression_test_straight_cone(plot=args.plot),
+        "dedup_float_tolerance": _regression_test_dedup_float_tolerance(),
+        "fillet_extent_rejection": _regression_test_fillet_extent_rejection(),
+    }
+    for name, ok in results.items():
+        print(f"Regression test [{name}]:", "PASS" if ok else "FAIL")
+    if not all(results.values()):
+        raise SystemExit(1)
