@@ -21,20 +21,19 @@ fixed:
   barrel_count: 1               # single barrel immediately trailing the exit (see note above)
 
 bounds:
-  throat_radius: [0.0011, 0.0020]              # ~2.2-4mm throat diameter (Badali et al.)
+  throat_radius: [0.0011, 0.0014]              # real gap below cp1_radius's min (0.0015)
   throat_fillet_radius: [0.0001, 0.0006]        # capped well under 0.6 * min(throat_radius)=0.00066m
                                                  # to avoid spurious fillet_bound rejections at the
                                                  # low end of throat_radius
   control_point_1_position: [0.020, 0.060]
-  control_point_1_radius: [0.0015, 0.0028]
+  control_point_1_radius: [0.0015, 0.0022]      # real gap below cp2_radius's min (0.0025)
   control_point_2_position: [0.070, 0.180]      # >= cp1_position max + 1cm gap
-  control_point_2_radius: [0.0025, 0.0060]
+  control_point_2_radius: [0.0025, 0.0045]      # real gap below exit_radius's min (0.0048)
   exit_position: [0.22, 0.30]                   # >= cp2_position max (0.180) + 4cm gap; covers
                                                  # Badali et al.'s tested 120-360mm divergent lengths
                                                  # and Gutierrez de Frutos et al.'s optimum (~200mm)
                                                  # at the lower end, with room beyond both
-  exit_radius: [0.0025, 0.0070]                 # expansion ratio ~4-16 at min throat_radius,
-                                                 # bracketing both tested values (8, 12)
+  exit_radius: [0.0048, 0.0070]                 # real gap above cp2_radius's max (0.0045)
   barrel_length: [0.0, 0.150]                   # 0 effectively disables the barrel; matches
                                                  # Badali et al.'s max tested (150mm)
   barrel_position_0: [0.0, 0.0]                 # fixed at exit (see note above)
