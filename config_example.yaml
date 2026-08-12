@@ -6,6 +6,9 @@
 # barrel_count is fixed per sweep (set it and re-run for a different count),
 # and barrel_positions are sampled as `barrel_count` independent bounds
 # entries below (only the first `barrel_count` are used).
+#
+# exit_position is swept independently of control_point_2_position (it is
+# NOT derived from it) -- see README.md "Geometry sections" for why.
 
 fixed:
   inlet_radius: 0.010
@@ -25,6 +28,14 @@ bounds:
   control_point_2_position: [0.012, 0.020]
   control_point_2_radius: [0.006, 0.009]
   exit_radius: [0.009, 0.012]
+  # Independently swept -- NOT derived from control_point_2_position.
+  # Badali et al. found divergent length is the single most influential
+  # parameter for particle velocity, so its range here is deliberately
+  # wide relative to control_point_2_position's upper bound (0.020) to
+  # let the sampler explore short and long divergent sections alike.
+  # Lower bound must stay above control_point_2_position's own bounds or
+  # every sample with a large cp2_position will be auto-rejected.
+  exit_position: [0.022, 0.050]
   # One entry per barrel section (length must equal fixed.barrel_count).
   barrel_position_0: [0.0, 0.002]
 

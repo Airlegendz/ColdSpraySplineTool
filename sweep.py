@@ -116,7 +116,15 @@ def run_sweep(config_path: str, n_samples: int, seed: int, out_dir: str, make_pl
                 plot_profile(result.points, os.path.join(out_dir, f"{geom_id}.png"), title=geom_id)
         else:
             n_rejected += 1
-            reason_key = result.rejection_reason.split(":")[0] if result.rejection_reason else "unknown"
+            # Rejection reasons are tagged with a stable "[category]" prefix
+            # by nozzle_geometry.py (e.g. "[curvature] ..."); bucket on that
+            # tag rather than the full message so the breakdown groups by
+            # constraint type instead of by value-specific text.
+            reason = result.rejection_reason or "[unknown] no reason recorded"
+            if reason.startswith("[") and "]" in reason:
+                reason_key = reason[1:reason.index("]")]
+            else:
+                reason_key = "unknown"
             rejection_counts[reason_key] = rejection_counts.get(reason_key, 0) + 1
             logger.info("%s REJECTED: %s", geom_id, result.rejection_reason)
 

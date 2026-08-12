@@ -33,7 +33,10 @@ any other CFD preprocessor) via a Latin hypercube sweep.
 
 1. **Convergent** (fixed, not parameterized): a raised-cosine contraction
    from a fixed `inlet_radius` to `throat_radius` over `convergent_length`,
-   with zero slope at both ends (both are configurable, not swept).
+   with zero slope at both ends (both are configurable, not swept). Zero
+   slope at the throat end is required, not incidental: the throat is by
+   definition the point of minimum radius, and any smooth curve has zero
+   slope at a true minimum. See "Throat transition smoothness" below.
 2. **Throat fillet**: a circular arc of radius `throat_fillet_radius`,
    tangent to the flat convergent wall and blending into the divergent
    section's initial slope.
@@ -51,30 +54,60 @@ any other CFD preprocessor) via a Latin hypercube sweep.
    is C1) or left as the natural last-chord slope when there is no barrel
    (so the spline degenerates exactly to a straight line when all four
    knots are colinear — see the regression test). See the module docstring
-   in `nozzle_geometry.py` for the full rationale. The exit axial position
-   is derived as `control_point_2_position + 1.5 * (control_point_2_position
-   - control_point_1_position)` — also a documented default, not a swept
-   parameter.
+   in `nozzle_geometry.py` for the full rationale.
+
+   `exit_position` (axial distance from the throat to the exit point) is an
+   **independent, directly-swept parameter** — it is *not* derived from
+   `control_point_2_position`. This was a deliberate fix: an earlier
+   version derived it as `control_point_2_position + 1.5 * (cp2_position -
+   cp1_position)`, which silently locked overall divergent length to the
+   cp1↔cp2 spacing and removed the sweep's ability to explore divergent
+   length independently — a problem because Badali et al. found divergent
+   length to be the single most influential parameter for particle
+   velocity. Bounds must satisfy `control_point_1_position <
+   control_point_2_position < exit_position`, enforced by the
+   `positive_lengths` constraint check.
 4. **Barrel(s)**: `barrel_count` straight, constant-radius sections at the
    given `barrel_positions` (axial offsets from the divergent section's
    exit), each of length `barrel_length`. Skipped entirely if
    `barrel_count = 0`.
 
+### Throat transition smoothness
+
+Zoomed plots of the convergent → fillet → divergent-spline transition show
+a visually flat-looking run of a few hundred microns to ~1mm around the
+throat (reproduce with `nozzle_geometry.py`'s throat-zoom check). This is
+**expected, C1/C2-continuous behavior, not a defect**: the throat is
+defined as the wall's minimum radius, so `dr/dx = 0` there by construction,
+and any smooth curve necessarily flattens as it approaches a true minimum
+from both sides — independent of `throat_fillet_radius` (verified across
+fillet radii from ~0.0008–0.0024m; the flat-looking span is essentially
+unchanged). Forcing the convergent section to retain a nonzero slope at the
+throat, as an alternative fix, was considered and rejected: it would mean
+the wall is still narrowing as it enters the fillet, which the
+`monotonicity` constraint (radius non-decreasing from throat to exit) would
+then have to reject. No slope discontinuity exists at either the
+convergent→fillet or fillet→divergent-spline joins — confirmed numerically
+(finite-difference slope is continuous to within sampling noise, ~4e-4,
+across both joins).
+
 ## Constraints enforced (reject, don't silently mesh)
 
-- **Monotonicity**: wall radius must be non-decreasing from throat to exit.
-- **Curvature cap**: `|d²r/dx²|` is capped at `max_curvature` (finite-
-  difference proxy), a **configurable, currently UNCONFIRMED** threshold
-  (default `800.0` 1/m in `config_example.yaml`, `500.0` in the code
-  default) — a stand-in for flow-separation risk and manufacturability,
-  not a value derived from CFD or experiment yet.
-- **Positive lengths**: `control_point_1_position < control_point_2_position
-  < exit_position`, positive `convergent_length`, positive `barrel_length`
-  when `barrel_count > 0`.
-- **Fillet radius bound**: `throat_fillet_radius <= max_fillet_fraction *
-  throat_radius`, with `max_fillet_fraction` **configurable and
-  UNCONFIRMED** (default `0.5`–`0.6` depending on config).
-- **Barrel non-overlap**: when `barrel_count > 1`, barrel intervals
+Each rejection reason is tagged with a stable `[category]` prefix (e.g.
+`[curvature] ...`) so `sweep.py` can report a clean breakdown by constraint
+type rather than by raw, value-specific message text.
+
+- **`[monotonicity]`**: wall radius must be non-decreasing from throat to
+  exit.
+- **`[curvature]`**: `|d²r/dx²|` is capped at `max_curvature` (finite-
+  difference proxy) — a stand-in for flow-separation risk and
+  manufacturability, not a value derived from CFD or experiment yet.
+- **`[positive_lengths]`**: `control_point_1_position <
+  control_point_2_position < exit_position`, positive `convergent_length`,
+  positive `barrel_length` when `barrel_count > 0`.
+- **`[fillet_bound]`**: `throat_fillet_radius <= max_fillet_fraction *
+  throat_radius`.
+- **`[barrel_overlap]`**: when `barrel_count > 1`, barrel intervals
   `[position, position + barrel_length]` must not overlap each other.
 
 Every rejection is logged with the specific reason (which check failed and
@@ -83,19 +116,49 @@ the offending value), not dropped silently — this is what
 
 ### ⚠️ Values that need confirmation before a full sweep
 
-The following are implemented as configurable parameters with a logged
-default, **not** as validated engineering values:
+`max_curvature` and `max_fillet_fraction` are implemented as configurable
+parameters with **one authoritative default each**, not as validated
+engineering values:
 
-- `max_curvature` (curvature/smoothness cap)
-- `max_fillet_fraction` (fillet-radius-to-throat-radius cap)
-- `inlet_radius`, `convergent_length` (fixed convergent-section shape)
-- The divergent-section exit-position extension factor (`1.5x` the
-  `cp1→cp2` spacing)
+- `max_curvature = 800.0` (1/m)
+- `max_fillet_fraction = 0.6`
+
+Both defaults live in `nozzle_geometry.py` (`DEFAULT_MAX_CURVATURE`,
+`DEFAULT_MAX_FILLET_FRACTION`) and are duplicated in `config_example.yaml`'s
+`fixed` section with the same values, so there is no drift between "the
+code default" and "the example sweep default" — they're intentionally the
+same UNCONFIRMED number. **Override behavior**: when driving generation
+through `sweep.py`, any threshold set in the YAML config always wins —
+`sweep.py` forwards every key present in the config as an explicit
+`GeometryConfig` keyword argument, which overrides the dataclass field
+default. The code-level default only applies if you construct
+`GeometryConfig` directly (e.g. ad hoc scripts, tests) without specifying
+the field.
+
+Also unconfirmed: `inlet_radius`, `convergent_length` (fixed
+convergent-section shape).
 
 Confirm these against the actual CFD/experimental setup before committing
-to a full production sweep — a first-pass `config_example.yaml` sweep at
-these defaults sees a ~50% rejection rate, which is itself a signal the
-bounds (or thresholds) need tightening, as flagged in the sweep log.
+to a full production sweep. With the current `config_example.yaml` bounds
+and the defaults above, a 200-sample sweep (`--seed 1`) sees a **38.5%
+rejection rate** (123/200 valid), broken down as:
+
+| category | count |
+|---|---|
+| `fillet_bound` | 38 |
+| `monotonicity` | 26 |
+| `curvature` | 13 |
+
+This was re-measured *after* making `exit_position` an independent
+parameter (see above) — the earlier ~50% figure included artifacts from
+the old derived exit-position formula compressing the divergent spline
+into a tighter-than-intended span, which spuriously tripped the curvature
+cap. `fillet_bound` is now the largest bucket: `throat_fillet_radius`
+bounds `[0.0015, 0.0025]` and `throat_radius` bounds `[0.003, 0.005]`
+combined with `max_fillet_fraction = 0.6` reject any sample where
+`throat_fillet_radius > 0.6 * throat_radius` — this is a genuine bounds/
+threshold interaction, not an artifact, and is the next thing to tighten
+once real fillet-fraction guidance is available.
 
 ## Usage
 

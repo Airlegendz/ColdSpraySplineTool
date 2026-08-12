@@ -50,8 +50,17 @@ Point = Tuple[float, float]
 # ----------------------------------------------------------------------------
 DEFAULT_INLET_RADIUS = 0.010          # m, fixed convergent-section inlet radius. UNCONFIRMED.
 DEFAULT_CONVERGENT_LENGTH = 0.030     # m, axial length of fixed convergent section. UNCONFIRMED.
-DEFAULT_MAX_FILLET_FRACTION = 0.5     # throat_fillet_radius <= this * throat_radius. UNCONFIRMED.
-DEFAULT_MAX_CURVATURE = 500.0         # 1/m, cap on |d2r/dx2| along the divergent curve. UNCONFIRMED.
+# Single authoritative code-fallback default for each threshold (used only
+# when a caller builds GeometryConfig directly without specifying the
+# field -- e.g. ad hoc scripts or tests). config_example.yaml's `fixed`
+# section sets the same values explicitly and, for anything driven through
+# sweep.py, THAT value always wins: sweep.py forwards every key present in
+# the YAML config as an explicit GeometryConfig kwarg, which overrides the
+# dataclass field default below. These two are kept numerically identical
+# on purpose so "the code default" and "the example sweep default" are the
+# same UNCONFIRMED number until real values are validated.
+DEFAULT_MAX_FILLET_FRACTION = 0.6     # throat_fillet_radius <= this * throat_radius. UNCONFIRMED.
+DEFAULT_MAX_CURVATURE = 800.0         # 1/m, cap on |d2r/dx2| along the divergent curve. UNCONFIRMED.
 DEFAULT_DIVERGENT_SAMPLES = 200       # samples along the divergent spline (>=50 required)
 DEFAULT_FILLET_SAMPLES = 30
 DEFAULT_CONVERGENT_SAMPLES = 40
@@ -67,6 +76,7 @@ class GeometryConfig:
     control_point_2_radius: float
     control_point_2_position: float
     exit_radius: float
+    exit_position: float  # axial distance from the throat to the exit point, meters. Independently swept -- see README.
     barrel_length: float
     barrel_count: int
     barrel_positions: List[float] = field(default_factory=list)
@@ -217,12 +227,12 @@ def _divergent_spline(cfg: GeometryConfig, throat_point: Point, throat_slope: fl
     tx, tr = throat_point
     cp1 = (tx + cfg.control_point_1_position, cfg.control_point_1_radius)
     cp2 = (tx + cfg.control_point_2_position, cfg.control_point_2_radius)
-    # Exit position is implied: exit is placed at control_point_2_position
-    # plus a fixed extension so the exit x is strictly greater than cp2's x.
-    # We take the exit axial position as 1.5x the (cp1->cp2) spacing beyond
-    # cp2, a simple, documented default kept local to this function.
-    exit_dx = 1.5 * (cfg.control_point_2_position - cfg.control_point_1_position)
-    exit_point = (cp2[0] + max(exit_dx, 1e-6), cfg.exit_radius)
+    # exit_position is an independent, swept input (axial distance from the
+    # throat) -- NOT derived from cp1/cp2 spacing. Divergent length was
+    # found to be the single most influential parameter for particle
+    # velocity (Badali et al.), so it must be freely explorable by the
+    # sampler rather than locked to a fixed multiple of the cp1-cp2 span.
+    exit_point = (tx + cfg.exit_position, cfg.exit_radius)
 
     knots = [throat_point, cp1, cp2, exit_point]
 
@@ -290,26 +300,37 @@ def _barrel_sections(cfg: GeometryConfig, exit_point: Point) -> List[Point]:
 # ----------------------------------------------------------------------------
 # Constraint checks
 # ----------------------------------------------------------------------------
+# Every rejection reason is prefixed with one of these stable category tags
+# so callers (e.g. sweep.py's rejection-rate breakdown) can bucket by
+# constraint type instead of by the full, value-specific message text.
+REASON_POSITIVE_LENGTHS = "positive_lengths"
+REASON_FILLET_BOUND = "fillet_bound"
+REASON_BARREL_OVERLAP = "barrel_overlap"
+REASON_MONOTONICITY = "monotonicity"
+REASON_CURVATURE = "curvature"
+
+
 def _check_positive_lengths(cfg: GeometryConfig) -> Optional[str]:
-    if not (0 < cfg.control_point_1_position < cfg.control_point_2_position):
+    if not (0 < cfg.control_point_1_position < cfg.control_point_2_position < cfg.exit_position):
         return (
-            f"non-increasing control point positions: "
-            f"cp1_pos={cfg.control_point_1_position}, cp2_pos={cfg.control_point_2_position}"
+            f"[{REASON_POSITIVE_LENGTHS}] non-increasing divergent-section positions: "
+            f"cp1_pos={cfg.control_point_1_position}, cp2_pos={cfg.control_point_2_position}, "
+            f"exit_position={cfg.exit_position}"
         )
     if cfg.barrel_count > 0 and cfg.barrel_length <= 0:
-        return f"non-positive barrel_length={cfg.barrel_length}"
+        return f"[{REASON_POSITIVE_LENGTHS}] non-positive barrel_length={cfg.barrel_length}"
     if cfg.convergent_length <= 0:
-        return f"non-positive convergent_length={cfg.convergent_length}"
+        return f"[{REASON_POSITIVE_LENGTHS}] non-positive convergent_length={cfg.convergent_length}"
     return None
 
 
 def _check_fillet_bound(cfg: GeometryConfig) -> Optional[str]:
     if cfg.throat_fillet_radius < 0:
-        return f"negative throat_fillet_radius={cfg.throat_fillet_radius}"
+        return f"[{REASON_FILLET_BOUND}] negative throat_fillet_radius={cfg.throat_fillet_radius}"
     limit = cfg.max_fillet_fraction * cfg.throat_radius
     if cfg.throat_fillet_radius > limit:
         return (
-            f"throat_fillet_radius={cfg.throat_fillet_radius} exceeds "
+            f"[{REASON_FILLET_BOUND}] throat_fillet_radius={cfg.throat_fillet_radius} exceeds "
             f"max_fillet_fraction*throat_radius={limit} "
             f"(max_fillet_fraction={cfg.max_fillet_fraction}, UNCONFIRMED default)"
         )
@@ -321,13 +342,13 @@ def _check_barrel_overlap(cfg: GeometryConfig, exit_x: float) -> Optional[str]:
         return None
     if len(cfg.barrel_positions) != cfg.barrel_count:
         return (
-            f"barrel_positions length {len(cfg.barrel_positions)} != "
+            f"[{REASON_BARREL_OVERLAP}] barrel_positions length {len(cfg.barrel_positions)} != "
             f"barrel_count {cfg.barrel_count}"
         )
     intervals = sorted((p, p + cfg.barrel_length) for p in cfg.barrel_positions)
     for (s0, e0), (s1, e1) in zip(intervals, intervals[1:]):
         if s1 < e0:
-            return f"overlapping barrel sections: [{s0},{e0}] and [{s1},{e1}]"
+            return f"[{REASON_BARREL_OVERLAP}] overlapping barrel sections: [{s0},{e0}] and [{s1},{e1}]"
     return None
 
 
@@ -340,7 +361,7 @@ def _check_monotonic_and_curvature(points: List[Point], throat_x: float, cfg: Ge
     prev_r = None
     for x, r in seg:
         if prev_r is not None and r < prev_r - 1e-9:
-            return f"non-monotonic radius at x={x:.6g}: r={r:.6g} < prev_r={prev_r:.6g}"
+            return f"[{REASON_MONOTONICITY}] non-monotonic radius at x={x:.6g}: r={r:.6g} < prev_r={prev_r:.6g}"
         prev_r = r
 
     # Second-derivative curvature proxy via finite differences on non-uniform
@@ -355,7 +376,7 @@ def _check_monotonic_and_curvature(points: List[Point], throat_x: float, cfg: Ge
         d2r = 2 * (h1 * rs[i + 1] - (h1 + h2) * rs[i] + h2 * rs[i - 1]) / (h1 * h2 * (h1 + h2))
         if abs(d2r) > cfg.max_curvature:
             return (
-                f"curvature exceeds max_curvature at x={xs[i]:.6g}: "
+                f"[{REASON_CURVATURE}] curvature exceeds max_curvature at x={xs[i]:.6g}: "
                 f"|d2r/dx2|={abs(d2r):.6g} > {cfg.max_curvature} "
                 f"(UNCONFIRMED default threshold)"
             )
@@ -419,15 +440,13 @@ def _regression_test_straight_cone(plot: bool = False) -> bool:
     """
     throat_r = 0.003
     exit_r = 0.010
-    exit_dx_target = 0.040  # matches the 1.5x extension logic below at cp2_pos=0.016
 
     cp1_pos = 0.008
     cp2_pos = 0.016
-    # Place cp1/cp2 radii exactly on the straight line throat->exit, using
-    # the same exit_x construction as _divergent_spline (exit_dx = 1.5*(cp2-cp1)).
-    exit_dx = 1.5 * (cp2_pos - cp1_pos)
-    exit_x_rel = cp2_pos + exit_dx  # axial distance from throat to exit
-    slope = (exit_r - throat_r) / exit_x_rel
+    exit_pos = 0.040  # independent exit_position, chosen beyond cp2_pos
+
+    # Place cp1/cp2 radii exactly on the straight line throat->exit.
+    slope = (exit_r - throat_r) / exit_pos
     cp1_r = throat_r + slope * cp1_pos
     cp2_r = throat_r + slope * cp2_pos
 
@@ -439,6 +458,7 @@ def _regression_test_straight_cone(plot: bool = False) -> bool:
         control_point_2_radius=cp2_r,
         control_point_2_position=cp2_pos,
         exit_radius=exit_r,
+        exit_position=exit_pos,
         barrel_length=0.0,
         barrel_count=0,
         barrel_positions=[],
