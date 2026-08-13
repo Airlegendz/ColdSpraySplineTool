@@ -1,0 +1,48 @@
+# Process conditions and solver settings for the Fluent DPM cold-spray
+# batch solve, consumed by fluent_solve.py / fluent_batch.py via PyFluent.
+#
+# STATUS: same as nozzle_geometry.py's max_curvature/max_fillet_fraction and
+# mesh_geometry.py's n_axial/first_cell_height -- every numeric value below
+# is a configurable parameter with a logged, PLACEHOLDER default, not a
+# validated engineering value. Where "Badali et al." is referenced, the
+# exact published values were not available while building this pipeline
+# (no local copy of the paper's numeric tables) -- these are typical
+# nitrogen cold-spray literature ballparks standing in for the real
+# values, and MUST be checked against the actual paper / experimental
+# setup before the results are used for anything beyond a pipeline smoke
+# test. Flagged individually below.
+
+gas:
+  species: nitrogen
+  inlet_stagnation_pressure_pa: 3000000     # 3.0 MPa. UNCONFIRMED -- typical N2 cold-spray driving pressure (2-4 MPa range in literature), not sourced from Badali et al. directly.
+  inlet_stagnation_temperature_k: 800       # 800 K. UNCONFIRMED -- typical cold-spray gas preheat temperature.
+  outlet_static_pressure_pa: 101325         # 1 atm ambient backpressure. UNCONFIRMED whether the actual setup vents to atmosphere or a controlled chamber pressure.
+  turbulence_intensity_fraction: 0.05       # 5%. UNCONFIRMED placeholder for inlet/outlet turb-intensity BC method.
+
+particle:
+  material: copper                          # UNCONFIRMED that "copper" matches an exact material name in Fluent's material database on the target machine -- may need to be added/renamed to match.
+  density_kg_m3: 8960                       # copper. Confirmed material property (not geometry/process-dependent), but confirm this is the intended powder material.
+  diameter_um: 25                           # 25 micron. UNCONFIRMED -- typical median cold-spray copper powder size; real powders have a size distribution, not a single diameter.
+  injection_temperature_k: 300              # room temperature. UNCONFIRMED -- assumes particles enter near-ambient, much colder than the preheated carrier gas.
+  injection_velocity_m_s: 5.0               # UNCONFIRMED -- initial (carrier/powder-feeder) particle velocity at the centerline injection point, before gas drag acceleration through the nozzle.
+  mass_flow_rate_kg_s: 1.0e-4               # UNCONFIRMED placeholder DPM mass flow rate (0.1 g/s); real powder feed rates vary widely by setup.
+  two_way_coupling: false                   # one-way (gas -> particle) coupling by default -- UNCONFIRMED whether particle loading is dense enough to need two-way coupling for this setup.
+
+solver:
+  type: density-based-implicit               # matches compressible, shock-capturing nozzle flow (Badali et al.-style setup).
+  turbulence_model: k-epsilon                # combined with k_epsilon_variant below.
+  k_epsilon_variant: realizable               # UNCONFIRMED -- realizable k-epsilon is a common, reasonable default for nozzle/jet flows, but not verified against Badali et al.'s exact model choice.
+  energy_equation: true                        # required for compressible density-based flow.
+
+convergence:
+  max_iterations: 2000                      # hard cap so a non-converging case doesn't hang indefinitely. UNCONFIRMED whether 2000 is enough for this class of geometry -- watch the subset validation run closely.
+  check_interval: 50                        # how often (in iterations) fluent_solve.py polls residuals against the targets below to decide whether to stop early.
+  continuity_residual: 1.0e-4
+  velocity_residual: 1.0e-4
+  energy_residual: 1.0e-6
+  k_residual: 1.0e-4
+  epsilon_residual: 1.0e-4
+
+output:
+  results_dirname: fluent_results           # where per-geometry DPM summary text files and case/data files are written on the Windows machine, then copied back.
+  write_case_data: true                     # write the full .cas.h5/.dat.h5 for later inspection, in addition to the small DPM summary text file.

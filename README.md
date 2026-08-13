@@ -18,6 +18,13 @@ any other CFD preprocessor) via a Latin hypercube sweep.
   `geometry_XXXX.csv` files into Fluent-ready `.msh` meshes; see
   [MESHING.md](MESHING.md) for the full write-up (domain construction,
   Fluent import steps, configurable mesh-density parameters).
+- `fluent_solve.py` / `run_subset.py` / `fluent_batch.py` /
+  `build_training_set.py` — remote Fluent DPM batch solve over PyFluent's
+  gRPC connection (no `.jou` files, no manual file transfer); see
+  [FLUENT_REMOTE.md](FLUENT_REMOTE.md) for the full write-up (starting
+  Fluent's gRPC server, connectivity validation, subset validation before
+  the full batch, and what's verified vs. still needs first-contact
+  testing).
 
 ## Coordinate convention
 
