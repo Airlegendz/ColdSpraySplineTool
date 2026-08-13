@@ -91,7 +91,13 @@ def _zone_centroid_stats(solver_session, zone_name: str) -> tuple:
     data = solver_session.fields.field_data.get_field_data(
         SurfaceFieldDataRequest(data_types=[SurfaceDataType.FacesCentroid], surfaces=[zone_name])
     )
-    centroids = SurfaceData(data[zone_name]).face_centroids
+    surf = data[zone_name]
+    # Confirmed live: get_field_data() already returns a SurfaceData instance
+    # per zone (not a raw dict as the generic type hint in live_field_data.py
+    # suggested) -- wrapping it in SurfaceData(...) again fails with
+    # "'SurfaceData' object has no attribute 'get'". Handle both shapes
+    # defensively rather than hardcode the one just observed.
+    centroids = surf.face_centroids if hasattr(surf, "face_centroids") else SurfaceData(surf).face_centroids
     xs = centroids[:, 0]
     ys = centroids[:, 1]
     return float(xs.mean()), float(ys.mean()), len(xs)
