@@ -17,13 +17,26 @@ guessed from documentation. That's a meaningfully stronger footing than
 the earlier .jou/TUI-string approach, where command syntax had to be
 inferred from general TUI conventions with no way to check it locally.
 
-What is NOT verified, because it requires either a live Fluent session or
-version-specific runtime data the static stub doesn't carry:
-  - Whether mesh import via `settings.file.read(file_type="mesh", ...)`
-    actually accepts a Gmsh MSH2 file directly, vs. requiring a
-    Fluent-Meshing-side conversion step first. No "gmsh" import command
-    exists anywhere in the generated settings tree, which is itself a
-    signal worth taking seriously -- FLAG THIS FIRST on the subset run.
+LIVE TESTING SO FAR (against a real Fluent 2026 R1 session on a separate
+Windows PC, via run_subset.py): mesh import now succeeds cleanly using
+Abaqus INP (mesh_geometry.py) via `file.import_.read(file_type=
+"abaqus-input", ...)` -- two earlier attempts failed live first (native
+"mesh" reader: "Null Domain Pointer"; CGNS: crashed the whole Fluent
+process with SIGSEGV). Two real bugs were also found and fixed by live
+testing: Command objects are keyword-only (positional calls to
+`set_zone_type`/`injections.create` raised "Command.__call__() takes 1
+positional argument but 3 were given"), and Fluent's Abaqus importer
+discards our wall/axis/inlet/outlet element-set names entirely, requiring
+`_recover_boundary_zone_names` (angle-based zone splitting + geometric
+identification via face centroids) to recover them post-import -- see
+that function's docstring for what's confirmed vs. still a live guess.
+
+What is NOT yet verified, because it requires further live testing:
+  - `_recover_boundary_zone_names` as a whole: the 45-degree split angle,
+    whether it produces exactly 4 pieces, and whether centroid-based
+    classification correctly identifies each one. Built from confirmed
+    API signatures (sep_face_zone_angle, zone_name, get_field_data) but
+    never run end-to-end yet.
   - The exact allowed-value strings for `injection_type.option` (DPM
     injection type, e.g. "single") and `particle_type`/`material_2`
     (e.g. "inert", "copper") -- these are runtime-populated
@@ -47,6 +60,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from ansys.fluent.core.fields.field_data_interfaces import SurfaceData, SurfaceDataType, SurfaceFieldDataRequest
+
 logger = logging.getLogger("fluent_solve")
 
 
@@ -59,6 +74,102 @@ class SolveResult:
     exit_velocity_m_s: Optional[float]
     warnings: list
     error: Optional[str]
+
+
+def _zone_centroid_stats(solver_session, zone_name: str) -> tuple:
+    """
+    Returns (mean_x, mean_y, n_faces) for a face zone's centroids.
+
+    Uses solver_session.fields.field_data.get_field_data(SurfaceFieldDataRequest(...))
+    -- confirmed real (not guessed): checked directly against the installed
+    PyFluent package's fields/live_field_data.py (LiveFieldData.get_field_data,
+    with a documented usage example in its own docstring) and
+    fields/field_data_interfaces.py (SurfaceData.face_centroids, an Nx3 array).
+    session.fields.field_data itself confirmed present via session.py's
+    BaseSession.__init__ (self.fields = Fields(...)).
+    """
+    data = solver_session.fields.field_data.get_field_data(
+        SurfaceFieldDataRequest(data_types=[SurfaceDataType.FacesCentroid], surfaces=[zone_name])
+    )
+    centroids = SurfaceData(data[zone_name]).face_centroids
+    xs = centroids[:, 0]
+    ys = centroids[:, 1]
+    return float(xs.mean()), float(ys.mean()), len(xs)
+
+
+def _recover_boundary_zone_names(solver_session, geometry_id: str) -> None:
+    """
+    Fluent's Abaqus INP importer collapses ALL boundary edges into one
+    merged wall-type zone, ignoring our exported wall/axis/inlet/outlet
+    element-set names entirely (confirmed live: a real Fluent 2026 R1
+    session imported our mesh with all boundary edges under a single
+    generic zone like "wall-2", not four named ones). Recovers the
+    distinction here rather than at the file-format level, since two
+    format attempts (CGNS, which crashed Fluent outright, and Abaqus INP)
+    both failed to carry zone names through cleanly.
+
+    Approach: split the merged zone at sharp-angle corners (our four
+    boundary segments meet at ~90-degree corners; the wall/axis curves
+    themselves are smooth, bounded-curvature C1 curves that shouldn't
+    locally exceed a 45-degree angle between adjacent mesh edges at this
+    resolution) via settings.mesh.modify_zones.sep_face_zone_angle --
+    confirmed real signature (face_zone_name, angle, move_faces) checked
+    against both the installed settings schema and PyFluent's official
+    docs. Then identifies each resulting piece by its face-centroid
+    geometry (axis: mean radial position ~0; inlet: mean axial position
+    ~0; outlet: mean axial position ~x_max; wall: whatever's left, by far
+    the most faces) and renames via settings.mesh.modify_zones.zone_name
+    (also confirmed real).
+
+    UNVERIFIED: the 45-degree angle threshold and the assumption that
+    sep_face_zone_angle produces exactly 4 pieces here (not more, e.g. if
+    the wall's own curvature somewhere locally exceeds 45 degrees between
+    adjacent cells, or fewer, if some corners are smoother than expected).
+    This whole function is the least-tested part of the pipeline so far --
+    watch its behavior closely on the next live run.
+    """
+    settings = solver_session.settings
+    wall_names_before = settings.setup.boundary_conditions.wall.get_object_names()
+    if len(wall_names_before) != 1:
+        logger.warning(
+            "%s: expected exactly 1 merged wall zone before splitting, found %s -- "
+            "proceeding with the first one, but this is unexpected.",
+            geometry_id, wall_names_before,
+        )
+    merged_zone_name = wall_names_before[0]
+
+    settings.mesh.modify_zones.sep_face_zone_angle(
+        face_zone_name=merged_zone_name, angle=45.0, move_faces=True,
+    )
+
+    wall_names_after = settings.setup.boundary_conditions.wall.get_object_names()
+    logger.info("%s: zone split produced %s (from %s)", geometry_id, wall_names_after, merged_zone_name)
+
+    if len(wall_names_after) < 4:
+        raise RuntimeError(
+            f"Expected the merged boundary zone to split into >=4 pieces "
+            f"(wall/axis/inlet/outlet); got {wall_names_after}. The 45-degree "
+            f"angle threshold in _recover_boundary_zone_names likely needs adjusting."
+        )
+
+    stats = {name: _zone_centroid_stats(solver_session, name) for name in wall_names_after}
+    logger.info("%s: zone centroid stats (mean_x, mean_y, n_faces): %s", geometry_id, stats)
+
+    remaining = dict(stats)
+    axis_name = min(remaining, key=lambda n: remaining[n][1])  # smallest mean radial position
+    del remaining[axis_name]
+    inlet_name = min(remaining, key=lambda n: remaining[n][0])  # smallest mean axial position
+    del remaining[inlet_name]
+    outlet_name = max(remaining, key=lambda n: remaining[n][0])  # largest mean axial position
+    del remaining[outlet_name]
+    wall_name = max(remaining, key=lambda n: remaining[n][2])  # most faces, of whatever's left
+
+    renames = {axis_name: "axis", inlet_name: "inlet", outlet_name: "outlet", wall_name: "wall"}
+    logger.info("%s: renaming zones: %s", geometry_id, renames)
+    for old_name, new_name in renames.items():
+        if old_name == new_name:
+            continue
+        settings.mesh.modify_zones.zone_name(zone_name=old_name, new_name=new_name)
 
 
 def _set_pressure_inlet(inlet_bc, gas_cfg: dict) -> None:
@@ -76,7 +187,7 @@ def _set_pressure_outlet(outlet_bc, gas_cfg: dict) -> None:
     # hydraulic diameter set by caller (geometry-dependent, 2*exit_radius)
 
 
-def setup_case(solver_session, msh_path: str, geom_params: dict, cfg: dict) -> None:
+def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dict, cfg: dict) -> None:
     """
     Reads the mesh and configures models/BCs/DPM for one geometry. Raises
     on any hard failure (caller is expected to wrap in try/except per
@@ -117,6 +228,12 @@ def setup_case(solver_session, msh_path: str, geom_params: dict, cfg: dict) -> N
     # is expected to point at a .inp file, despite the parameter name
     # (kept for compatibility with existing callers/tests).
     settings.file.import_.read(file_type="abaqus-input", file_name=msh_path)
+
+    # --- Recover wall/axis/inlet/outlet zone names ------------------------
+    # Confirmed live: the import above merges all boundary edges into one
+    # generic zone (e.g. "wall-2"), discarding our named element sets
+    # entirely. See _recover_boundary_zone_names's docstring.
+    _recover_boundary_zone_names(solver_session, geometry_id)
 
     # --- 2D axisymmetric, density-based solver ---------------------------
     settings.setup.general.solver.type = cfg["solver"]["type"]
@@ -318,7 +435,7 @@ def solve_geometry(solver_session, geometry_id: str, msh_path: str, geom_params:
     """
     warnings = []
     try:
-        setup_case(solver_session, msh_path, geom_params, cfg)
+        setup_case(solver_session, geometry_id, msh_path, geom_params, cfg)
     except Exception as e:
         logger.error("%s: setup failed: %s", geometry_id, e)
         return SolveResult(geometry_id, False, False, 0, None, warnings, f"setup failed: {e}")
