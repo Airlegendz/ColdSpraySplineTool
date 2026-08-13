@@ -34,13 +34,16 @@ that function's docstring for what's confirmed vs. still a live guess.
 What is NOT yet verified, because it requires further live testing:
   - `_recover_boundary_zone_names` as a whole: the 45-degree split angle,
     whether it produces exactly 4 pieces, and whether centroid-based
-    classification correctly identifies each one. Built from confirmed
-    API signatures (sep_face_zone_angle, zone_name, get_field_data) but
-    never run end-to-end yet.
-  - The exact allowed-value strings for `injection_type.option` (DPM
-    injection type, e.g. "single") and `particle_type`/`material_2`
-    (e.g. "inert", "copper") -- these are runtime-populated
-    AllowedValuesMixin classes with no values baked into the static stub.
+    classification correctly identifies each one. CONFIRMED LIVE and
+    working on geometry_0001: split produced exactly 4 pieces (2999/2999/
+    39/39 faces) and centroid-based identification correctly matched all
+    four to axis/inlet/outlet/wall on the first successful attempt.
+  - `particle_type = "inert"` and `material = "copper"` -- CONFIRMED LIVE
+    (Fluent printed "Copying particle material from the database: copper"
+    with no error). `injection_type.option = "single"` was tried and
+    FAILED live ("ASSQ: invalid argument [2]: improper list") -- removed
+    rather than guessed again; a new injection defaults to single-point
+    already, so leaving it unset should be equivalent.
   - Residual equation names used for convergence-criteria/monitoring
     (e.g. "continuity", "x-velocity") -- standard Fluent naming, but not
     confirmed against this schema version specifically.
@@ -282,9 +285,13 @@ def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dic
     particle_cfg = cfg["particle"]
     settings.setup.models.discrete_phase.injections.create(name="injection-1")
     injection = settings.setup.models.discrete_phase.injections["injection-1"]
-    injection.particle_type = "inert"  # UNVERIFIED exact allowed-value string, see module docstring
-    injection.material = particle_cfg["material"]  # UNVERIFIED: must exist in Fluent's material database
-    injection.injection_type.option = "single"  # UNVERIFIED exact allowed-value string
+    injection.particle_type = "inert"  # confirmed live: accepted without error
+    injection.material = particle_cfg["material"]  # confirmed live: "Copying particle material from the database: copper"
+    # injection_type.option deliberately NOT set: the guessed value "single"
+    # caused a live failure ("ASSQ: invalid argument [2]: improper list")
+    # immediately after the material assignment above. A new injection's
+    # default type is single-point already, so just leaving this unset
+    # avoids the bad guess entirely rather than trying another one blind.
     injection.initial_values.location.x = 0.0
     injection.initial_values.location.y = 0.0
     injection.initial_values.velocity = particle_cfg["injection_velocity_m_s"]
