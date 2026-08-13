@@ -287,17 +287,33 @@ def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dic
     injection = settings.setup.models.discrete_phase.injections["injection-1"]
     injection.particle_type = "inert"  # confirmed live: accepted without error
     injection.material = particle_cfg["material"]  # confirmed live: "Copying particle material from the database: copper"
-    # injection_type.option deliberately NOT set: the guessed value "single"
-    # caused a live failure ("ASSQ: invalid argument [2]: improper list")
-    # immediately after the material assignment above. A new injection's
-    # default type is single-point already, so just leaving this unset
-    # avoids the bad guess entirely rather than trying another one blind.
-    injection.initial_values.location.x = 0.0
-    injection.initial_values.location.y = 0.0
-    injection.initial_values.velocity = particle_cfg["injection_velocity_m_s"]
-    injection.initial_values.particle_size = particle_cfg["diameter_um"] * 1e-6
-    injection.initial_values.temperature = particle_cfg["injection_temperature_k"]
-    injection.initial_values.mass_flow_rate = particle_cfg["mass_flow_rate_kg_s"]
+    # injection_type.option removal (previous attempt) did NOT fix the
+    # "ASSQ: invalid argument [2]: improper list" error -- it recurred at
+    # the exact same point, meaning the actual culprit is one of the lines
+    # below, not injection_type.option. None of these individually produce
+    # console output, so the failing line can't be told apart from the
+    # transcript alone. Isolating each one with its own try/except so the
+    # next live run pinpoints exactly which assignment is malformed,
+    # instead of guessing again blind.
+    _dpm_fields = [
+        ("location.x", lambda: setattr(injection.initial_values.location, "x", 0.0)),
+        ("location.y", lambda: setattr(injection.initial_values.location, "y", 0.0)),
+        ("velocity", lambda: setattr(injection.initial_values, "velocity",
+                                      particle_cfg["injection_velocity_m_s"])),
+        ("particle_size", lambda: setattr(injection.initial_values, "particle_size",
+                                           particle_cfg["diameter_um"] * 1e-6)),
+        ("temperature", lambda: setattr(injection.initial_values, "temperature",
+                                         particle_cfg["injection_temperature_k"])),
+        ("mass_flow_rate", lambda: setattr(injection.initial_values, "mass_flow_rate",
+                                            particle_cfg["mass_flow_rate_kg_s"])),
+    ]
+    for field_name, setter in _dpm_fields:
+        try:
+            setter()
+            logger.info("DPM initial_values.%s: OK", field_name)
+        except Exception as e:
+            logger.error("DPM initial_values.%s: FAILED: %s", field_name, e)
+            raise
 
     # --- Convergence criteria -----------------------------------------------
     # UNVERIFIED equation-name strings (see module docstring) -- standard
