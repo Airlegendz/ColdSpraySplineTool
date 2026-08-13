@@ -123,7 +123,11 @@ def setup_case(solver_session, msh_path: str, geom_params: dict, cfg: dict) -> N
     settings.setup.general.solver.two_dim_space = "axisymmetric"
 
     # --- Fix the axis zone type (the manual step flagged in MESHING.md) --
-    settings.setup.boundary_conditions.set_zone_type(["axis"], "axis")
+    # PyFluent's generated Command objects are keyword-only (Command.__call__
+    # takes **kwds, no positional args) -- confirmed live: an earlier
+    # positional call here failed with "Command.__call__() takes 1
+    # positional argument but 3 were given".
+    settings.setup.boundary_conditions.set_zone_type(zone_list=["axis"], new_type="axis")
 
     # --- Physics models ----------------------------------------------------
     settings.setup.models.energy.enabled = bool(cfg["solver"]["energy_equation"])
@@ -144,7 +148,7 @@ def setup_case(solver_session, msh_path: str, geom_params: dict, cfg: dict) -> N
 
     # --- DPM: centerline particle injection at the inlet (x=0, r=0) --------
     particle_cfg = cfg["particle"]
-    settings.setup.models.discrete_phase.injections.create("injection-1")
+    settings.setup.models.discrete_phase.injections.create(name="injection-1")
     injection = settings.setup.models.discrete_phase.injections["injection-1"]
     injection.particle_type = "inert"  # UNVERIFIED exact allowed-value string, see module docstring
     injection.material = particle_cfg["material"]  # UNVERIFIED: must exist in Fluent's material database
