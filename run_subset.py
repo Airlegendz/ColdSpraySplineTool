@@ -74,6 +74,14 @@ def main():
                               "to (e.g. 'C:\\\\fluent_meshes'). Fluent reads from here, not from --mesh-dir.")
     parser.add_argument("--config", default="fluent_config.yaml")
     parser.add_argument("--n", type=int, default=2, help="Number of geometries to solve (2-3 recommended).")
+    parser.add_argument("--keep-session-open", action="store_true",
+                         help="Don't call session.exit() at the end -- session.exit() actually terminates the "
+                              "whole remote Fluent application (confirmed live: it calls "
+                              "fluent_connection.exit(), not just a client-side disconnect), not just this "
+                              "script's connection to it. During iterative debugging (this flag's main use "
+                              "case) that means every run, success or failure, forces a full Fluent relaunch "
+                              "on the Windows PC before the next attempt. Use this flag to leave Fluent open "
+                              "for a quick retry instead.")
     args = parser.parse_args()
 
     if args.ip and args.port is None:
@@ -114,8 +122,13 @@ def main():
                 result.exit_velocity_m_s, result.warnings, result.error,
             )
     finally:
-        session.exit()
-        logger.info("Session closed.")
+        if args.keep_session_open:
+            logger.info("Leaving Fluent session open (--keep-session-open) -- reuse the same "
+                        "IP/port/password for the next run instead of relaunching.")
+        else:
+            session.exit()
+            logger.info("Session closed (this terminated the remote Fluent application -- "
+                        "use --keep-session-open next time to avoid this during iterative debugging).")
 
     print()
     print("=" * 60)
