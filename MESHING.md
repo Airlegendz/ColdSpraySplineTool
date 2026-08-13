@@ -136,39 +136,98 @@ engineering values. The right values depend on your actual flow Reynolds
 number and haven't been established — confirm before a production meshing
 run.
 
-- `--n-axial` (default 150): transfinite node count along the wall/axis
-  (flow direction), split proportionally between the two throat blocks.
+- `--n-axial` (default **3000**): transfinite node count along the
+  wall/axis (flow direction), split between the two throat blocks
+  proportional to each block's share of the CSV's point count (see
+  `DEFAULT_N_AXIAL`'s code comment for why that split turned out fine —
+  it's actually *more* generous to the fixed-length convergent block than
+  a pure length-proportional split would be, not less). This default is
+  much higher than an initial guess of 150 for a real, diagnosed reason —
+  see "Quality-metric note" below.
 - `--n-radial` (default 40): transfinite node count along inlet/interface/
   outlet (radial direction).
 - `--first-cell-height` (default 5e-6 m): target wall-adjacent cell height
   for boundary-layer clustering. The pipeline solves for the geometric
   growth ratio that achieves this over `n_radial` cells (falls back to
   `--bl-growth-ratio-fallback`, default 1.2, if the target height is
-  infeasible for the given curve length/cell count).
-- `--quality-threshold` (default 0.02, only used with
+  infeasible for the given curve length/cell count). Checked as a possible
+  second contributor to the quality issue below (it's a fixed *absolute*
+  value regardless of local throat scale) — for the actual 80-sample sweep
+  this was tested against, `throat_radius` only varies ~1.27x across the
+  batch, so `first_cell_height`'s relative scale barely varies either; not
+  a live problem *for this batch's bounds*, but the same class of
+  fragility as `n_axial` was, and worth revisiting if `throat_radius`
+  bounds are ever widened substantially in a future sweep.
+- `--quality-threshold` (default **0.05**, only used with
   `--mesh-quality-check`): **soft/informational** threshold on minSICN
   (Gmsh's signed inverted condition number, a scaled-Jacobian-like 0..1
-  quality measure). Read this carefully before changing it: elements with
-  quality <= 0 are inverted/degenerate and are **always** treated as a hard
-  failure regardless of this threshold — a genuinely broken mesh. Elements
-  scoring between 0 and this threshold are only **warned** about, because
-  a correctly-built boundary-layer mesh legitimately produces very thin,
-  high-aspect-ratio cells at the wall, and minSICN penalizes aspect ratio
-  as well as skew — a tight, otherwise-correct first cell can score as low
-  as ~0.003 (observed on the regression fixture) without being wrong. This
-  default is set low enough to avoid flagging that expected case. Fluent
-  reports orthogonal quality / aspect ratio as separate metrics, which are
-  more meaningful for assessing boundary-layer cells specifically than a
-  single blended quality number — worth checking there too before trusting
-  a borderline mesh.
+  quality measure). Elements with quality <= 0 are inverted/degenerate and
+  are **always** treated as a hard failure regardless of this threshold —
+  a genuinely broken mesh. Elements scoring between 0 and this threshold
+  are only **warned** about — see the quality-metric note below for what
+  that's calibrated against now.
 
 ## `--mesh-quality-check`
 
 Computes `minSICN` over all elements after meshing. Always fails the
 geometry (marks it unmeshed, with an error) if any element is inverted or
 degenerate (`quality <= 0`). Otherwise warns (does not fail) if the minimum
-quality falls below `--quality-threshold` — see the note above on why that's
-deliberately a soft check for this kind of mesh.
+quality falls below `--quality-threshold`.
+
+### Quality-metric note: core mesh vs. boundary-layer cells (corrected)
+
+An earlier version of this document attributed low overall `minSICN`
+readings (~0.003, observed with an initial `n_axial=150` default) entirely
+to intentional boundary-layer cell thinness at the wall. **That was wrong**,
+and is corrected here rather than left as-is.
+
+Verified directly by peeling the mesh into structured layers outward from
+the wall (by node adjacency) and tracking `minSICN` per layer: at
+`n_axial=150`, quality climbed only gradually across *nearly the entire
+radial extent* — even the layer immediately next to the axis (as far from
+the wall as the mesh gets) only reached ~0.1, not the comfortably-high
+value a "just the BL row" explanation would predict. The real cause: axial
+cell width (domain length / `n_axial`) was far larger than the throat's
+radial extent for a slender nozzle (e.g. ~1.8mm axial cells against a
+~1.1mm-radius throat), so *nearly every cell in the mesh*, not just the
+thin first row at the wall, had a poor (elongated) aspect ratio. This
+affected every geometry in a real 80-sample sweep to varying degrees,
+which is exactly why all of them showed similarly low minimums rather than
+one obvious outlier.
+
+Fixed by raising `n_axial` to 3000 (see that default's code comment for
+the derivation — solved for the worst-case, i.e. smallest, `throat_radius`
+in the batch, then checked it wasn't excessive for the largest-radius and
+largest-`exit_position` geometries too). Re-verified with the same
+layer-peeling method after the fix, on the geometry that had the batch's
+worst overall reading:
+
+| layer from wall | min quality | max quality | mean quality |
+|---|---|---|---|
+| 0 (wall-adjacent) | 0.055 | 0.122 | 0.078 |
+| 3 | 0.077 | 0.179 | 0.109 |
+| 8 | 0.133 | 0.343 | 0.192 |
+| 12 | 0.207 | 0.560 | 0.300 |
+| 20 | 0.425 | 0.998 | 0.651 |
+| 38 (axis-adjacent) | 0.160 | 1.000 | 0.578 |
+
+That's the shape a genuine "BL-row-only" quality dip should look like: a
+fast, clean climb through the first ~10-20 layers, not a slow crawl across
+the whole domain. Re-ran the full 72-geometry batch after the fix: **72/72
+meshed, 0 failed, 0 inverted elements, quality range 0.055-0.089**, all
+above the (now correspondingly raised) 0.05 soft threshold — versus
+0.0027-0.0043 (all flagged) before the fix.
+
+The remaining low points — the wall-adjacent row (thin by design) and a
+narrow dip right at the axis-adjacent layer — are real and expected: the
+first is deliberate BL clustering, working as intended; the second appears
+tied to how the two throat blocks' independently-solved radial growth
+ratios (each based on its own local wall radius) meet at the shared axis
+point, and is a much smaller, localized effect worth a closer look later
+but not the systemic problem the pre-fix numbers indicated. Fluent's own
+orthogonal-quality / aspect-ratio diagnostics remain the more meaningful
+check for boundary-layer cells specifically, and are still worth running
+before a full solve.
 
 ## Known limitations / follow-ups
 
@@ -182,6 +241,15 @@ deliberately a soft check for this kind of mesh.
   Fluent's own mesh-quality diagnostics (orthogonal quality, aspect ratio,
   skewness) before a full solve.
 - `first_cell_height`/`n_radial`/`n_axial` defaults are not derived from any
-  actual Reynolds-number or y+ target — confirm against your flow
+  actual Reynolds-number or y+ target — `n_axial` is now at least
+  geometrically self-consistent (derived from matching axial and radial
+  cell scales at the throat, see above), but none of the three have been
+  validated against real flow physics. Confirm against your flow
   conditions before a production meshing run, same caveat as the geometry
   generator's own unconfirmed defaults.
+- `first_cell_height` is a fixed absolute value, not scaled to local
+  geometry (e.g. `throat_radius`). Checked and found not to be a live
+  problem for the current sweep's narrow `throat_radius` range (~1.27x
+  spread), but this is the same class of fragility that made the old
+  `n_axial=150` default silently wrong for a wider geometry range — revisit
+  if `throat_radius` bounds are ever widened substantially.

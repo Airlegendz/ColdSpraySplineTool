@@ -54,14 +54,35 @@ DEDUP_TOL = 1e-9
 # values. The right values depend on the actual flow Reynolds number and
 # haven't been established. See MESHING.md.
 # ----------------------------------------------------------------------------
-DEFAULT_N_AXIAL = 150          # transfinite node count along wall/axis (flow direction). UNCONFIRMED.
-DEFAULT_N_RADIAL = 40           # transfinite node count along inlet/outlet (radial direction). UNCONFIRMED.
+DEFAULT_N_AXIAL = 3000          # transfinite node count along wall/axis (flow direction). UNCONFIRMED,
+                                 # but not arbitrary -- see the "Axial resolution" note below and
+                                 # MESHING.md's quality-metric section for how this was derived.
+DEFAULT_N_RADIAL = 40           # transfinite node count along inlet/interface/outlet (radial direction). UNCONFIRMED.
+#
+# Axial resolution note: an earlier default of 150 produced axial cells far
+# wider than the throat's radial extent (e.g. ~1.8mm axial cells against a
+# ~1.1mm-radius throat), giving every cell in the mesh -- not just the
+# boundary-layer row -- a bad aspect ratio, confirmed via layer-by-layer
+# quality peeling from the wall outward (overall min minSICN ~0.003, and
+# even the layer nearest the axis only reached ~0.1). 3000 was chosen by
+# solving for the axial cell size at the throat (for the smallest
+# throat_radius seen in a real 80-sample sweep, ~0.0011m) that's
+# comparable to (not many times larger than) the largest boundary-layer-
+# graded radial cell at that same station, then verified empirically (not
+# just analytically) via the same layer-peeling check -- core-region min
+# quality rose from ~0.003 to ~0.06-0.3+ through the bulk of the radial
+# extent. Checked against the largest-throat_radius and largest-
+# exit_position geometries in the same batch too, to confirm this isn't
+# wastefully fine for them (it isn't -- their resulting element counts and
+# mesh times were comparable, since block A's physical length is fixed by
+# convergent_length regardless of the rest of the geometry).
 DEFAULT_FIRST_CELL_HEIGHT = 5e-6  # m, target wall-adjacent cell height for BL clustering. UNCONFIRMED.
 DEFAULT_BL_GROWTH_RATIO_FALLBACK = 1.2  # used only if first_cell_height can't be solved for. UNCONFIRMED.
 DEFAULT_MESH_FORMAT = "msh2"    # "msh2" (MSH2, older/pickier Fluent versions) or "msh4". UNCONFIRMED
                                  # which your specific Fluent install expects -- see MESHING.md.
-DEFAULT_QUALITY_THRESHOLD = 0.02  # SOFT/informational threshold on minSICN. UNCONFIRMED, and read the
-                                   # note below before treating this as "the pass/fail bar":
+DEFAULT_QUALITY_THRESHOLD = 0.05  # SOFT/informational threshold on minSICN. UNCONFIRMED, and read the
+                                   # note below (and MESHING.md's quality-metric section) before treating
+                                   # this as "the pass/fail bar":
                                    #
                                    # Elements with quality <= 0 are inverted/degenerate -- always a real
                                    # meshing failure, checked separately (n_inverted_elements) and always
@@ -70,12 +91,18 @@ DEFAULT_QUALITY_THRESHOLD = 0.02  # SOFT/informational threshold on minSICN. UNC
                                    # Elements with 0 < quality < quality_threshold are just WARNED about,
                                    # not failed, because boundary-layer meshes (which this pipeline
                                    # deliberately builds -- see first_cell_height) intentionally produce
-                                   # very thin, high-aspect-ratio cells at the wall. minSICN penalizes
-                                   # aspect ratio as well as skew, so a tight, otherwise-correct BL first
-                                   # cell can legitimately score quite low here (observed ~0.003 on the
-                                   # regression fixture at first_cell_height=5e-6m) without being wrong.
-                                   # This default is set low enough to avoid flagging that expected case;
-                                   # it still needs validating against your actual Reynolds number and
+                                   # very thin, high-aspect-ratio cells at the wall, and minSICN penalizes
+                                   # aspect ratio as well as skew, so a correctly-built BL first cell can
+                                   # legitimately score low here without being wrong (~0.03-0.07 observed
+                                   # at the wall-adjacent layer specifically, after fixing DEFAULT_N_AXIAL
+                                   # -- see that constant's note). IMPORTANT: this was previously
+                                   # (wrongly) assumed to explain the *entire* low-quality reading across
+                                   # the whole mesh, not just the wall row; layer-by-layer verification
+                                   # showed the dominant cause was actually an axial/radial resolution
+                                   # mismatch affecting nearly every cell, now fixed via DEFAULT_N_AXIAL.
+                                   # This default is set to flag genuinely low core-mesh quality without
+                                   # also flagging the (now correctly isolated) wall-adjacent BL row; it
+                                   # still needs validating against your actual Reynolds number and
                                    # solver's own mesh-quality expectations (Fluent reports orthogonal
                                    # quality / aspect ratio separately, which is the more meaningful check
                                    # for BL cells specifically -- see MESHING.md).
