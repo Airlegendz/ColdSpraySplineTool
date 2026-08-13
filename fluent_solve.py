@@ -85,12 +85,26 @@ def setup_case(solver_session, msh_path: str, geom_params: dict, cfg: dict) -> N
     settings = solver_session.settings
 
     # --- Mesh import ----------------------------------------------------
-    # UNVERIFIED (see module docstring): no dedicated "gmsh" import path
-    # exists in the generated settings tree, so this uses the generic
-    # mesh-file reader. If this fails on the subset run, the fallback is
-    # importing via Fluent Meshing mode and re-exporting a native Fluent
-    # mesh first -- see FLUENT_REMOTE.md.
-    settings.file.read(file_type="mesh", file_name=msh_path)
+    # Two prior attempts failed live against a real Fluent 2026 R1 session:
+    #   1. settings.file.read(file_type="mesh", ...) read the file but
+    #      errored "Null Domain Pointer" -- that's Fluent's *native*
+    #      mesh-format reader (File > Read > Mesh), not a general importer.
+    #   2. settings.file.import_.read(file_type="gmsh", ...) failed with an
+    #      explicit, live-enumerated list of allowed file_type values --
+    #      "gmsh" is NOT one of them. The full allowed list (Fluent 2026 R1,
+    #      solver-mode file.import_.read): cgns-mesh, cgns-mesh-data,
+    #      import-gambit, mechanical-apdl-input, mechanical-apdl-result,
+    #      abaqus-fil, abaqus-input, abaqus-odb, import-hypermesh,
+    #      import-ensight, nastran-bulkdata, nastran-output2, plot3d-mesh,
+    #      tecplot-mesh, cfx-definition, cfx-result, gtm-files,
+    #      partition-metis, partition-metis-zone. No Gmsh/MSH format at all.
+    #
+    # Fixed by exporting CGNS instead of Gmsh MSH2 as the mesh interchange
+    # format (mesh_geometry.py; confirmed physical group names wall/axis/
+    # inlet/outlet/fluid survive the CGNS round-trip intact). msh_path here
+    # is expected to point at a .cgns file, despite the parameter name
+    # (kept for compatibility with existing callers/tests).
+    settings.file.import_.read(file_type="cgns-mesh", file_name=msh_path)
 
     # --- 2D axisymmetric, density-based solver ---------------------------
     settings.setup.general.solver.type = cfg["solver"]["type"]
