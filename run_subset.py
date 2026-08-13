@@ -101,7 +101,7 @@ def main():
             with open(json_path) as f:
                 geom_params = json.load(f)
 
-            remote_msh_path = f"{args.remote_mesh_dir.rstrip(chr(92)).rstrip('/')}\\{geometry_id}.msh"
+            remote_msh_path = f"{args.remote_mesh_dir.rstrip(chr(92)).rstrip('/')}\\{geometry_id}.inp"
 
             logger.info("=" * 60)
             logger.info("Solving %s (remote path: %s) ...", geometry_id, remote_msh_path)

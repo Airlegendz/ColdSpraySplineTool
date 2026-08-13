@@ -126,7 +126,7 @@ def main():
             try:
                 with open(json_path) as f:
                     geom_params = json.load(f)
-                remote_msh_path = f"{args.remote_mesh_dir.rstrip(chr(92)).rstrip('/')}\\{geometry_id}.msh"
+                remote_msh_path = f"{args.remote_mesh_dir.rstrip(chr(92)).rstrip('/')}\\{geometry_id}.inp"
                 result = solve_geometry(session, geometry_id, remote_msh_path, geom_params, cfg)
             except Exception as e:
                 # Belt-and-suspenders: solve_geometry already catches its own

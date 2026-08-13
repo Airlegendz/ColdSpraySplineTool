@@ -98,13 +98,25 @@ def setup_case(solver_session, msh_path: str, geom_params: dict, cfg: dict) -> N
     #      import-ensight, nastran-bulkdata, nastran-output2, plot3d-mesh,
     #      tecplot-mesh, cfx-definition, cfx-result, gtm-files,
     #      partition-metis, partition-metis-zone. No Gmsh/MSH format at all.
+    #   3. Switched to CGNS ("cgns-mesh", in that allowed list; physical
+    #      group names confirmed intact through the export). Import got
+    #      further -- Fluent's CGNS backend (CeetronSAM.dll) loaded -- but
+    #      then the entire Fluent PROCESS segfaulted (SIGSEGV) while
+    #      reading the file. Not a Python-catchable error; killed the
+    #      session outright. Gmsh-written CGNS and this Fluent version's
+    #      CGNS reader are evidently incompatible in some way not worth
+    #      chasing further blind.
     #
-    # Fixed by exporting CGNS instead of Gmsh MSH2 as the mesh interchange
-    # format (mesh_geometry.py; confirmed physical group names wall/axis/
-    # inlet/outlet/fluid survive the CGNS round-trip intact). msh_path here
-    # is expected to point at a .cgns file, despite the parameter name
+    # Fixed by exporting Abaqus INP instead (mesh_geometry.py). "abaqus-
+    # input" is in the allowed list, INP is a mature/simple format, and --
+    # checked before touching Fluent again this time -- gmsh's INP writer
+    # emits proper named element sets (*ELSET,ELSET=wall / axis / inlet /
+    # outlet / fluid), unlike Nastran bulk data (also in the allowed list,
+    # but has no zone-naming mechanism at all -- checked and ruled out) or
+    # Gambit neutral format (silently wrote an empty file). msh_path here
+    # is expected to point at a .inp file, despite the parameter name
     # (kept for compatibility with existing callers/tests).
-    settings.file.import_.read(file_type="cgns-mesh", file_name=msh_path)
+    settings.file.import_.read(file_type="abaqus-input", file_name=msh_path)
 
     # --- 2D axisymmetric, density-based solver ---------------------------
     settings.setup.general.solver.type = cfg["solver"]["type"]
