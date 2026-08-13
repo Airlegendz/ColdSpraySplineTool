@@ -245,12 +245,21 @@ def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dic
     settings.setup.general.solver.type = cfg["solver"]["type"]
     settings.setup.general.solver.two_dim_space = "axisymmetric"
 
-    # --- Fix the axis zone type (the manual step flagged in MESHING.md) --
-    # PyFluent's generated Command objects are keyword-only (Command.__call__
-    # takes **kwds, no positional args) -- confirmed live: an earlier
-    # positional call here failed with "Command.__call__() takes 1
-    # positional argument but 3 were given".
+    # --- Fix zone TYPES (name != type in Fluent) --------------------------
+    # _recover_boundary_zone_names renamed the split-off pieces to "axis"/
+    # "inlet"/"outlet"/"wall", but a rename only changes the NAME -- all
+    # four are still typed as "wall" (inherited from the single merged
+    # zone they were split from), confirmed live by the next failure this
+    # caused: "'pressure_inlet' has no attribute 'inlet'" when trying to
+    # set inlet's boundary condition, since a wall-typed zone named
+    # "inlet" doesn't exist under boundary_conditions.pressure_inlet until
+    # its TYPE is also changed. "wall" needs no type change (already
+    # correct). PyFluent's generated Command objects are keyword-only
+    # (Command.__call__ takes **kwds, no positional args) -- confirmed
+    # live earlier when this used positional args instead.
     settings.setup.boundary_conditions.set_zone_type(zone_list=["axis"], new_type="axis")
+    settings.setup.boundary_conditions.set_zone_type(zone_list=["inlet"], new_type="pressure-inlet")
+    settings.setup.boundary_conditions.set_zone_type(zone_list=["outlet"], new_type="pressure-outlet")
 
     # --- Physics models ----------------------------------------------------
     settings.setup.models.energy.enabled = bool(cfg["solver"]["energy_equation"])
