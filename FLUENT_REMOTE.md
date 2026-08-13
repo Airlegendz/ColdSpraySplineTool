@@ -35,8 +35,25 @@ documentation-from-memory):
   `streaming_services/monitor_streaming.py`'s actual `MonitorsManager`
   class (an initial guess at a method called `get_monitor_set_data_all`
   was wrong and was corrected after checking the real source).
+- **Live connectivity, end to end**: `test_connection.py --insecure`
+  against a real Fluent 2026 R1 session running on a Windows PC (started
+  via `solver.tui.server.start_grpc_server()` in Fluent's Python Console)
+  reported "Connected. Fluent version reported: Ansys Fluent 2026 R1" and
+  closed cleanly. This confirms `connect_to_fluent(..., insecure_mode=True,
+  allow_remote_host=True)` works across two separate machines on this
+  network with no extra firewall/certificate configuration beyond checking
+  "gRPC Insecure Mode" in the Fluent Launcher.
+- **A real gap this caught**: `session.file.read(file_type="mesh", ...)`
+  needs a path Fluent itself (on Windows) can see -- it does not tunnel
+  file contents through the gRPC solver connection. `session.upload()`
+  looks like the right tool but is a no-op unless a separate file-transfer
+  service/server is configured (a whole additional server this project
+  doesn't stand up). Fixed by adding `--remote-mesh-dir` to
+  `run_subset.py`/`fluent_batch.py`: mesh files must be copied to the
+  Windows machine by ordinary means (network share, USB, cloud sync) first
+  -- see step 3 below.
 
-**NOT verified** (no live Fluent session was available while building
+**NOT verified** (no live Fluent *solve* was available while building
 this -- these need first-contact validation on your Windows machine,
 starting with `run_subset.py` on 2-3 geometries, before trusting the full
 batch):
@@ -150,11 +167,31 @@ fails:
 Once this connects cleanly, note down whichever connection details worked
 -- `run_subset.py` and `fluent_batch.py` take the identical arguments.
 
-## 3. Validate on a small subset
+## 3. Copy mesh files to the Windows machine
+
+Discovered while first connecting: Fluent's `file.read()` command needs a
+path **Fluent itself (on Windows) can see** -- it does not tunnel file
+contents through the gRPC solver connection. `session.upload()` looks like
+it should do this, but is a no-op unless a separate file-transfer
+server/service is configured, which this project doesn't set up (it would
+mean standing up yet another gRPC server on the Windows side).
+
+So: copy the `.msh` files you want to solve from `mesh_output_v1/` on this
+machine to some folder on the Windows PC (network share, USB drive, cloud
+sync -- whatever's easiest), e.g. `C:\fluent_meshes\`. For the subset
+validation, just the 2-3 files you're about to solve are enough; for the
+full batch, all 72.
+
+## 4. Validate on a small subset
 
 ```bash
-python3 run_subset.py --server-info-file path/to/server_info.txt --n 2
+python3 run_subset.py --server-info-file path/to/server_info.txt \
+    --remote-mesh-dir "C:\fluent_meshes" --n 2
 ```
+
+`--remote-mesh-dir` is the Windows-side path from step 3 -- `run_subset.py`
+still reads `mesh_output_v1/geometry_XXXX.json` locally for parameters,
+but tells Fluent to read the mesh from `--remote-mesh-dir` instead.
 
 This solves 2 geometries (raise `--n` to 3 if you want) end-to-end --
 mesh import, boundary conditions, DPM injection, iterate-to-convergence,
@@ -181,10 +218,14 @@ it prints at the end:
 broken, fix it in `fluent_solve.py` and re-run `run_subset.py` -- iterate
 here, not on the full 72-geometry run.
 
-## 4. Run the full batch
+## 5. Run the full batch
+
+Make sure all 72 `.msh` files are copied to the Windows machine first
+(step 3), then:
 
 ```bash
-python3 fluent_batch.py --server-info-file path/to/server_info.txt
+python3 fluent_batch.py --server-info-file path/to/server_info.txt \
+    --remote-mesh-dir "C:\fluent_meshes"
 ```
 
 Connects once, solves every `geometry_XXXX.msh` in `mesh_output_v1/` in
@@ -204,7 +245,7 @@ has every row completed up to that point -- you can inspect what's there,
 fix whatever caused the drop, and (for now) re-run from scratch, since
 there's no resume-from-checkpoint logic here yet.
 
-## 5. Build the surrogate training set
+## 6. Build the surrogate training set
 
 Once `fluent_batch_results.csv` exists (fully or partially):
 

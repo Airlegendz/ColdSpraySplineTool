@@ -9,9 +9,22 @@ step is where the real boundary-condition/DPM/mesh-import setup gets its
 first live test -- everything in fluent_solve.py up to this point has only
 been checked against PyFluent's static settings schema, not run.
 
+IMPORTANT: Fluent's file.read() command needs a path Fluent itself (on the
+Windows PC) can see -- it does NOT tunnel file contents through the gRPC
+solver connection the way session.upload() would (and upload() is a no-op
+unless a separate file-transfer service/server is configured, which this
+project does not set up). So the .msh files this script points Fluent at
+must already exist somewhere on the WINDOWS machine's filesystem --
+--mesh-dir (below) is just used locally to enumerate which geometries
+exist and load their .json parameters; --remote-mesh-dir is the Windows-
+side path where the matching .msh files need to have been copied to
+first (network share, USB, cloud sync, whatever's convenient).
+
 Usage:
-    python3 run_subset.py --server-info-file path/to/server_info.txt --n 2
-    python3 run_subset.py --ip 192.168.1.50 --port 12345 --password abc123 --n 3
+    python3 run_subset.py --server-info-file path/to/server_info.txt \\
+        --remote-mesh-dir "C:\\fluent_meshes" --n 2
+    python3 run_subset.py --ip 192.168.1.50 --port 12345 --password abc123 \\
+        --remote-mesh-dir "C:\\fluent_meshes" --n 3
 """
 
 from __future__ import annotations
@@ -54,7 +67,11 @@ def main():
     parser.add_argument("--password")
     parser.add_argument("--insecure", action="store_true",
                          help="Match Fluent Launcher's 'gRPC Insecure Mode' checkbox.")
-    parser.add_argument("--mesh-dir", default="mesh_output_v1")
+    parser.add_argument("--mesh-dir", default="mesh_output_v1",
+                         help="Local directory used to enumerate geometries and load their .json params.")
+    parser.add_argument("--remote-mesh-dir", required=True,
+                         help="Windows-side directory where the matching .msh files have already been copied "
+                              "to (e.g. 'C:\\\\fluent_meshes'). Fluent reads from here, not from --mesh-dir.")
     parser.add_argument("--config", default="fluent_config.yaml")
     parser.add_argument("--n", type=int, default=2, help="Number of geometries to solve (2-3 recommended).")
     args = parser.parse_args()
@@ -84,9 +101,11 @@ def main():
             with open(json_path) as f:
                 geom_params = json.load(f)
 
+            remote_msh_path = f"{args.remote_mesh_dir.rstrip(chr(92)).rstrip('/')}\\{geometry_id}.msh"
+
             logger.info("=" * 60)
-            logger.info("Solving %s ...", geometry_id)
-            result = solve_geometry(session, geometry_id, os.path.abspath(msh_path), geom_params, cfg)
+            logger.info("Solving %s (remote path: %s) ...", geometry_id, remote_msh_path)
+            result = solve_geometry(session, geometry_id, remote_msh_path, geom_params, cfg)
             results.append(result)
 
             logger.info(

@@ -78,7 +78,12 @@ def main():
     parser.add_argument("--password")
     parser.add_argument("--insecure", action="store_true",
                          help="Match Fluent Launcher's 'gRPC Insecure Mode' checkbox.")
-    parser.add_argument("--mesh-dir", default="mesh_output_v1")
+    parser.add_argument("--mesh-dir", default="mesh_output_v1",
+                         help="Local directory used to enumerate geometries and load their .json params.")
+    parser.add_argument("--remote-mesh-dir", required=True,
+                         help="Windows-side directory where all matching .msh files have already been copied "
+                              "to (e.g. 'C:\\\\fluent_meshes'). Fluent reads from here, not from --mesh-dir -- "
+                              "see fluent_solve.py's / run_subset.py's docstrings for why.")
     parser.add_argument("--config", default="fluent_config.yaml")
     parser.add_argument("--out-csv", default="fluent_batch_results.csv")
     args = parser.parse_args()
@@ -121,7 +126,8 @@ def main():
             try:
                 with open(json_path) as f:
                     geom_params = json.load(f)
-                result = solve_geometry(session, geometry_id, os.path.abspath(msh_path), geom_params, cfg)
+                remote_msh_path = f"{args.remote_mesh_dir.rstrip(chr(92)).rstrip('/')}\\{geometry_id}.msh"
+                result = solve_geometry(session, geometry_id, remote_msh_path, geom_params, cfg)
             except Exception as e:
                 # Belt-and-suspenders: solve_geometry already catches its own
                 # errors internally, but a truly unexpected exception (e.g.
