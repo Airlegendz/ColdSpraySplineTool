@@ -14,6 +14,10 @@ any other CFD preprocessor) via a Latin hypercube sweep.
   CSV/JSON and a master index CSV.
 - `plotting.py` — shared matplotlib helper (mirrored wall plot to PNG).
 - `config_example.yaml` — example parameter bounds.
+- `mesh_geometry.py` / `mesh_sweep.py` — Gmsh meshing pipeline that turns
+  `geometry_XXXX.csv` files into Fluent-ready `.msh` meshes; see
+  [MESHING.md](MESHING.md) for the full write-up (domain construction,
+  Fluent import steps, configurable mesh-density parameters).
 
 ## Coordinate convention
 

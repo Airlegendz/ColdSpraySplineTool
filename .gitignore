@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
 sweep_output/
+sweep_output_v1/
+mesh_output/
+mesh_output_v1/
 regression_straight_cone.png
