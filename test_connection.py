@@ -13,6 +13,11 @@ how to obtain these values from the Windows machine):
     # via explicit IP/port/password
     python3 test_connection.py --ip 192.168.1.50 --port 12345 --password abc123
 
+If the Windows PC's Fluent Launcher has "gRPC Insecure Mode" checked
+(General Options tab, alongside "Allow Remote gRPC Host") -- the simplest
+setup for a private/trusted two-machine connection, skipping TLS
+certificates entirely -- add --insecure here too so the client side matches.
+
 VERIFIED vs NOT: connect_to_fluent's signature below (ip/port/address/
 server_info_file_name/password/allow_remote_host/...) was checked directly
 against the installed ansys-fluent-core package source in this environment
@@ -36,6 +41,9 @@ def main():
     parser.add_argument("--port", type=int, help="gRPC port (required with --ip).")
     parser.add_argument("--password", help="gRPC password (required with --ip; also usable with --server-info-file "
                                             "if the file doesn't embed one).")
+    parser.add_argument("--insecure", action="store_true",
+                         help="Match Fluent Launcher's 'gRPC Insecure Mode' checkbox -- skips TLS. "
+                              "Use this if that box is checked on the Windows side.")
     args = parser.parse_args()
 
     if args.ip and args.port is None:
@@ -50,6 +58,7 @@ def main():
                 server_info_file_name=args.server_info_file,
                 password=args.password,
                 allow_remote_host=True,
+                insecure_mode=args.insecure,
             )
         else:
             session = pyfluent.connect_to_fluent(
@@ -57,6 +66,7 @@ def main():
                 port=args.port,
                 password=args.password,
                 allow_remote_host=True,
+                insecure_mode=args.insecure,
             )
     except Exception as e:
         print(f"FAILED to connect: {type(e).__name__}: {e}")

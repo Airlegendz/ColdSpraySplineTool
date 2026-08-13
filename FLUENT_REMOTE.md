@@ -107,6 +107,16 @@ one of:
 - the **server-info file** itself (copy it to this machine), or
 - the **IP, port, and password** individually.
 
+**TLS vs. insecure mode**: the Fluent Launcher's General Options tab has
+an "Allow Remote gRPC Host" checkbox (must be checked for any of this to
+work) alongside a "gRPC Certificates Folder" field and a "gRPC Insecure
+Mode" checkbox. Fluent's remote gRPC defaults to TLS, which means
+matching certificates would need to be generated and copied to this
+machine too. For a private, trusted two-machine setup, the simpler option
+is: leave the certificates folder blank and check **"gRPC Insecure Mode"**
+-- then pass `--insecure` to every script here (`test_connection.py`,
+`run_subset.py`, `fluent_batch.py`) to match on this side.
+
 ## 2. Confirm connectivity with `test_connection.py`
 
 From this machine, with the server-info file copied over (or the IP/port/

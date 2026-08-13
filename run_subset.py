@@ -37,9 +37,11 @@ def connect(args):
             server_info_file_name=args.server_info_file,
             password=args.password,
             allow_remote_host=True,
+            insecure_mode=args.insecure,
         )
     return pyfluent.connect_to_fluent(
         ip=args.ip, port=args.port, password=args.password, allow_remote_host=True,
+        insecure_mode=args.insecure,
     )
 
 
@@ -50,6 +52,8 @@ def main():
     group.add_argument("--ip")
     parser.add_argument("--port", type=int)
     parser.add_argument("--password")
+    parser.add_argument("--insecure", action="store_true",
+                         help="Match Fluent Launcher's 'gRPC Insecure Mode' checkbox.")
     parser.add_argument("--mesh-dir", default="mesh_output_v1")
     parser.add_argument("--config", default="fluent_config.yaml")
     parser.add_argument("--n", type=int, default=2, help="Number of geometries to solve (2-3 recommended).")
