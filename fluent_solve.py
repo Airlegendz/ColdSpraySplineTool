@@ -244,6 +244,20 @@ def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dic
     # entirely. See _recover_boundary_zone_names's docstring.
     _recover_boundary_zone_names(solver_session, geometry_id)
 
+    # --- Fix the cell zone type (solid -> fluid) ---------------------------
+    # Confirmed live: solver initialization failed with "Flow boundary zone
+    # found adjacent to solid zone." Abaqus INP originates as a structural-
+    # analysis format, and Fluent's importer evidently defaults the cell
+    # zone to "solid" type rather than "fluid" -- our pressure-inlet/outlet
+    # face zones are geometrically adjacent to it, which Fluent correctly
+    # rejects for a non-fluid cell zone. cell_zone_conditions has its own
+    # set_zone_type (same signature as boundary_conditions.set_zone_type,
+    # confirmed against the schema), used here instead.
+    solid_zone_names = settings.setup.cell_zone_conditions.solid.get_object_names()
+    if solid_zone_names:
+        logger.info("%s: converting cell zone(s) %s from solid to fluid", geometry_id, solid_zone_names)
+        settings.setup.cell_zone_conditions.set_zone_type(zone_list=solid_zone_names, new_type="fluid")
+
     # --- 2D axisymmetric, density-based solver ---------------------------
     settings.setup.general.solver.type = cfg["solver"]["type"]
     settings.setup.general.solver.two_dim_space = "axisymmetric"
