@@ -33,6 +33,7 @@ solver:
   turbulence_model: k-epsilon                # combined with k_epsilon_variant below.
   k_epsilon_variant: realizable               # UNCONFIRMED -- realizable k-epsilon is a common, reasonable default for nozzle/jet flows, but not verified against Badali et al.'s exact model choice.
   energy_equation: true                        # required for compressible density-based flow.
+  courant_number: 2.0                        # UNCONFIRMED -- Fluent's density-based-implicit default is typically 5. Lowered here after a live run showed a real numerical instability: temperature repeatedly hit and exceeded its 5000K clip in a growing fraction of cells (~8.5% of the domain, 111675/116961*... cells over 11 iterations) as iterations progressed, residuals plateaued instead of converging, and the solve eventually stalled outright late in the 2000-iteration run (twice, in the same ~iteration-1950-1961 region, across independent runs -- a real hang, not just slow convergence: 22+ minutes elapsed with only ~17s of CPU time used and zero log progress). A lower Courant number is the standard first stability lever for a density-based solver under a strong, fine-mesh compressible expansion like this one (3 MPa -> 101 kPa, n_axial=3000 boundary-layer-resolved mesh) -- not yet confirmed this actually fixes the stall.
 
 convergence:
   max_iterations: 2000                      # hard cap so a non-converging case doesn't hang indefinitely. UNCONFIRMED whether 2000 is enough for this class of geometry -- watch the subset validation run closely.

@@ -284,6 +284,17 @@ def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dic
     if cfg["solver"]["turbulence_model"] == "k-epsilon":
         settings.setup.models.viscous.k_epsilon_model = cfg["solver"]["k_epsilon_variant"]
 
+    # --- Courant number (numerical stability) -------------------------------
+    # settings.solution.controls.courant_number -- confirmed real path against
+    # the schema. See fluent_config.yaml's courant_number comment for why
+    # this was lowered from Fluent's density-based-implicit default (~5):
+    # a live run showed a genuine solver stall (not just slow convergence)
+    # late in the iteration count, alongside worsening temperature-cap
+    # violations in a growing fraction of cells -- classic density-based
+    # instability symptoms for a strong, fine-mesh compressible expansion.
+    if "courant_number" in cfg["solver"]:
+        settings.solution.controls.courant_number = cfg["solver"]["courant_number"]
+
     # --- Boundary conditions -----------------------------------------------
     gas_cfg = cfg["gas"]
     bc = settings.setup.boundary_conditions
