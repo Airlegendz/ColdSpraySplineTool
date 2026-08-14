@@ -447,52 +447,83 @@ def extract_exit_velocity(solver_session, geometry_id: str, results_dir: str) ->
     schema), unlike the earlier report-definitions-based approach this
     replaces.
 
-    UNVERIFIED: the exact text layout of that summary file, so the mean
-    exit-velocity value has to be located by keyword search rather than a
-    fixed column/row position -- confirm this parsing actually finds the
-    right number against a real summary file from the subset run, and
-    adjust if the real layout differs.
+    Two real bugs fixed after a live test that ran a full 2000-iteration
+    solve successfully and only failed at this final step:
+      1. `injection=""` was rejected ("Value is not allowed: ('' is_not_in
+         ('injection-1'))") -- pass our actual injection name instead.
+      2. `results_dir` ("fluent_results/") doesn't exist ON THE REMOTE
+         (Windows) MACHINE -- os.makedirs() on this (local) machine was
+         useless, since Fluent writes the file server-side. Writes to a
+         bare filename in Fluent's own working directory instead (which
+         already exists) rather than assuming a subfolder is there.
+
+    Also: the written file lives on the REMOTE machine's filesystem, not
+    this one -- open()-ing summary_path locally would fail regardless
+    (same class of cross-machine path issue as the mesh files). No
+    file-transfer service is configured (see FLUENT_REMOTE.md), so this
+    reads the file's content back over the existing gRPC connection via
+    solver_session.scheme.eval() instead of assuming a shared filesystem.
+    solver_session.scheme confirmed present (session.py: self.scheme =
+    scheme_eval) and .eval(scm_input) confirmed to return the evaluated
+    Scheme value as a Python object (services/scheme_interpreter.py).
+
+    UNVERIFIED: the exact Scheme file-reading snippet below (standard
+    Scheme idiom, but Fluent's embedded interpreter's exact behavior/
+    available primitives aren't confirmed), and the exact text layout of
+    the summary file itself, so the mean exit-velocity value has to be
+    located by keyword search rather than a fixed column/row position.
     """
-    import os
-    os.makedirs(results_dir, exist_ok=True)
-    summary_path = os.path.join(results_dir, f"{geometry_id}_dpm_summary.txt")
+    summary_filename = f"{geometry_id}_dpm_summary.txt"
 
     solver_session.settings.results.report.discrete_phase.extended_summary(
         write_to_file=True,
-        file_name=summary_path,
+        file_name=summary_filename,
         include_in_domain_particles=False,
         pick_injection=False,
-        injection="",
+        injection="injection-1",
     )
 
-    return _parse_exit_velocity_from_summary(summary_path)
+    scm_read_file = (
+        f'(let* ((port (open-input-file "{summary_filename}")))'
+        f"  (let loop ((lines '()))"
+        f"    (let ((line (read-line port)))"
+        f"      (if (eof-object? line)"
+        f"          (begin (close-input-port port) (reverse lines))"
+        f"          (loop (cons line lines))))))"
+    )
+    try:
+        lines = solver_session.scheme.eval(scm_read_file)
+    except Exception as e:
+        logger.warning("%s: could not read back %s via scheme.eval: %s", geometry_id, summary_filename, e)
+        return None
+
+    return _parse_exit_velocity_from_lines(lines)
 
 
-def _parse_exit_velocity_from_summary(summary_path: str) -> Optional[float]:
+def _parse_exit_velocity_from_lines(lines) -> Optional[float]:
     """
-    Best-effort keyword-based parse of the DPM extended summary text file
-    for a mean particle velocity magnitude at the outlet zone. UNVERIFIED
-    against real Fluent output -- see extract_exit_velocity's docstring.
+    Best-effort keyword-based parse of the DPM extended summary text
+    (as a list of lines, read back via scheme.eval -- see
+    extract_exit_velocity's docstring) for a mean particle velocity
+    magnitude at the outlet zone. UNVERIFIED against real Fluent output.
     """
     import re
-    try:
-        with open(summary_path) as f:
-            text = f.read()
-    except FileNotFoundError:
-        logger.warning("Expected DPM summary file not found: %s", summary_path)
+    if not lines:
+        logger.warning("DPM summary read back empty or None -- nothing to parse.")
         return None
 
     # Look for a line mentioning "outlet" and "velocity" with a numeric
     # mean/average value nearby -- deliberately loose, since the exact
     # Fluent-version text layout isn't known here.
-    for line in text.splitlines():
-        if "outlet" in line.lower() and "velocity" in line.lower():
-            numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)
+    for line in lines:
+        line_str = str(line)
+        if "outlet" in line_str.lower() and "velocity" in line_str.lower():
+            numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line_str)
             if numbers:
                 return float(numbers[-1])
 
-    logger.warning("Could not locate an outlet velocity value in %s -- check the file's actual layout by hand.",
-                    summary_path)
+    logger.warning("Could not locate an outlet velocity value in the DPM summary -- "
+                    "check its actual layout by hand. First few lines: %s", lines[:10])
     return None
 
 
@@ -530,10 +561,13 @@ def solve_geometry(solver_session, geometry_id: str, msh_path: str, geom_params:
 
     if cfg["output"].get("write_case_data", True):
         try:
-            import os
-            results_dir = cfg["output"]["results_dirname"]
-            solver_session.settings.file.write_case(file_name=os.path.join(results_dir, f"{geometry_id}.cas.h5"))
-            solver_session.settings.file.write_data(file_name=os.path.join(results_dir, f"{geometry_id}.dat.h5"))
+            # Bare filenames (Fluent's own working directory), same fix as
+            # extract_exit_velocity -- cfg["output"]["results_dirname"]
+            # ("fluent_results/") doesn't exist on the remote machine, and
+            # os.path.join-ing it in here was a local-machine path that
+            # meant nothing to the remote Fluent process anyway.
+            solver_session.settings.file.write_case(file_name=f"{geometry_id}.cas.h5")
+            solver_session.settings.file.write_data(file_name=f"{geometry_id}.dat.h5")
         except Exception as e:
             logger.warning("%s: writing case/data failed (non-fatal): %s", geometry_id, e)
             warnings.append(f"writing case/data failed: {e}")
