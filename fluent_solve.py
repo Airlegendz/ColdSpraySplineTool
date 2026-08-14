@@ -295,17 +295,36 @@ def setup_case(solver_session, geometry_id: str, msh_path: str, geom_params: dic
     # transcript alone. Isolating each one with its own try/except so the
     # next live run pinpoints exactly which assignment is malformed,
     # instead of guessing again blind.
+    # velocity, particle_size, and mass_flow_rate are all Group-typed
+    # (multiple sub-modes/components), not plain scalars, despite looking
+    # like simple values in the task description -- confirmed live
+    # ("ASSQ: invalid argument [2]: improper list" on a bare-float
+    # assignment to velocity) and then confirmed structurally for all
+    # three against the installed settings schema before trying again:
+    #   velocity: Group with x_velocity/y_velocity/z_velocity/magnitude
+    #     (not a single scalar or vector-as-one-field) -- centerline
+    #     injection moving axially, so x_velocity = config value, y/z = 0.
+    #   particle_size: Group with option/diameter/rosin_rammler/
+    #     tabulated_size -- diameter (a plain Real) is the constant-size mode.
+    #   mass_flow_rate: Group with flow_rate/total_flow_rate/scale_by_area
+    #     -- total_flow_rate matches our config's intent (a single flow
+    #     rate for the whole injection, not per-unit-area).
+    # temperature (unlike the three above) IS a plain Real -- confirmed
+    # against the schema, left as a direct assignment.
     _dpm_fields = [
         ("location.x", lambda: setattr(injection.initial_values.location, "x", 0.0)),
         ("location.y", lambda: setattr(injection.initial_values.location, "y", 0.0)),
-        ("velocity", lambda: setattr(injection.initial_values, "velocity",
-                                      particle_cfg["injection_velocity_m_s"])),
-        ("particle_size", lambda: setattr(injection.initial_values, "particle_size",
-                                           particle_cfg["diameter_um"] * 1e-6)),
+        ("velocity.x_velocity", lambda: setattr(injection.initial_values.velocity, "x_velocity",
+                                                  particle_cfg["injection_velocity_m_s"])),
+        ("velocity.y_velocity", lambda: setattr(injection.initial_values.velocity, "y_velocity", 0.0)),
+        ("velocity.z_velocity", lambda: setattr(injection.initial_values.velocity, "z_velocity", 0.0)),
+        ("particle_size.diameter", lambda: setattr(injection.initial_values.particle_size, "diameter",
+                                                     particle_cfg["diameter_um"] * 1e-6)),
         ("temperature", lambda: setattr(injection.initial_values, "temperature",
                                          particle_cfg["injection_temperature_k"])),
-        ("mass_flow_rate", lambda: setattr(injection.initial_values, "mass_flow_rate",
-                                            particle_cfg["mass_flow_rate_kg_s"])),
+        ("mass_flow_rate.total_flow_rate", lambda: setattr(injection.initial_values.mass_flow_rate,
+                                                             "total_flow_rate",
+                                                             particle_cfg["mass_flow_rate_kg_s"])),
     ]
     for field_name, setter in _dpm_fields:
         try:
